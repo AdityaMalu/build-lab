@@ -1,20 +1,32 @@
 # Build Lab: Java backend practice projects
 
+[![verify](https://github.com/AdityaMalu/build-lab/actions/workflows/verify.yml/badge.svg)](https://github.com/AdityaMalu/build-lab/actions/workflows/verify.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 15 hands-on projects (8 build, 7 debug) with specs, starter code, test suites and reference solutions,
-plus a local web UI to read the spec, edit code, and run tests. Pure JDK, no Maven, no libraries.
+plus a web UI to read the spec, edit code, and run individual or all tests. Pure JDK, no Maven, no libraries.
 
-## Requirements
-JDK 17 or newer (needs `javac`, not just a JRE):
-```
-winget install Microsoft.OpenJDK.21
-```
+## Three ways to use it
 
-## Start
+**1. In your browser, nothing to install:** **https://build-lab.onrender.com**
+Your code and progress are saved in your browser (use *Export a backup* on the home page to keep them safe).
+
+**2. Your own cloud machine (GitHub Codespaces):**
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AdityaMalu/build-lab)
+
+Java is preinstalled and the lab opens automatically on port 8090. Uses your own free Codespaces quota.
+Codespaces are deleted after ~30 days without use, so to keep your work long term **fork this repo first**,
+open the Codespace from your fork, and commit your `workspace/` there (remove `workspace/` from `.gitignore`).
+
+**3. On your machine:** needs JDK 17+ (with `javac`)
 ```
-cd D:\amazon_prep\practice-lab
-.\lab.ps1                 # opens http://localhost:8090
+git clone https://github.com/AdityaMalu/build-lab.git
+cd build-lab
+.\lab.ps1                      # Windows, opens http://localhost:8090
+java server/LabServer.java     # macOS / Linux / any OS
 ```
-Or without the script: `java server/LabServer.java`
+Windows JDK install: `winget install Microsoft.OpenJDK.21`
 
 ## Command line
 ```
@@ -36,7 +48,8 @@ Or without the script: `java server/LabServer.java`
 2. **New → Blueprint →** pick `build-lab`. Render reads `render.yaml` and builds the `Dockerfile`.
 3. Share the `https://build-lab-xxxx.onrender.com` URL. Every push to `main` redeploys.
 
-Free instances sleep after ~15 minutes idle; the first visit after that takes ~1 minute to wake up.
+Free instances sleep after ~15 minutes idle; the `keep-awake` workflow pings the site every 10 minutes
+to prevent that (edit the URL in `.github/workflows/keep-awake.yml` if you deploy your own copy).
 Visitors' work isn't affected by restarts because it lives in their browsers.
 
 ## Codespaces
@@ -77,3 +90,9 @@ web/                           the UI
 | Password Reset | debug | Easy | config, clocks, timezones, single-use codes |
 
 All specs, code and tests here are original material written for practice.
+
+## Contributing
+New projects and fixes are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+[MIT](LICENSE)
