@@ -3,7 +3,7 @@
 [![verify](https://github.com/AdityaMalu/build-lab/actions/workflows/verify.yml/badge.svg)](https://github.com/AdityaMalu/build-lab/actions/workflows/verify.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-15 hands-on projects (8 build, 7 debug) with specs, starter code, test suites and reference solutions,
+18 hands-on projects (10 build, 8 debug) with specs, starter code, test suites and reference solutions,
 plus a web UI to read the spec, edit code, and run individual or all tests. Pure JDK, no Maven, no libraries.
 
 ## Three ways to use it
@@ -88,6 +88,9 @@ web/                           the UI
 | Keyword & User Blocking | build | Medium | tokenizing, strike windows, exact counts under races |
 | Persistent Private Watchlists | debug | Medium | authorization, atomic file writes, id recovery |
 | Password Reset | debug | Easy | config, clocks, timezones, single-use codes |
+| TTL + LRU Cache | build | Medium | expiry vs eviction, access order, single-flight loading |
+| Retrying Job Queue | build | Hard | leases and tokens, exponential backoff, dead letters |
+| Leaderboard Service | debug | Medium | competition ranking, tie order, mutating TreeSet entries, paging |
 
 All specs, code and tests here are original material written for practice.
 

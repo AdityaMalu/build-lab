@@ -43,5 +43,14 @@
    "tags": ["Debugging", "Persistence", "Authorization", "File I/O"]},
   {"id": "password-reset", "title": "Password Reset", "difficulty": "Easy", "minutes": 45, "kind": "debug",
    "summary": "Config keys, zero-padded codes, clock injection, timezones, single-use codes and attempt limits.",
-   "tags": ["Debugging", "Security", "Time & Timezones", "Configuration"]}
+   "tags": ["Debugging", "Security", "Time & Timezones", "Configuration"]},
+  {"id": "ttl-lru-cache", "title": "TTL + LRU Cache", "difficulty": "Medium", "minutes": 60, "kind": "build",
+   "summary": "A bounded cache with expiry, least-recently-used eviction, stats and stampede-proof single-flight loading.",
+   "tags": ["Caching", "Data Structures", "Concurrency", "Time & Timezones"]},
+  {"id": "job-queue", "title": "Retrying Job Queue", "difficulty": "Hard", "minutes": 75, "kind": "build",
+   "summary": "Leases with unique tokens, priority scheduling, exponential backoff, dead letters and zombie-worker protection.",
+   "tags": ["Queues", "Retries & Backoff", "Concurrency", "Distributed Systems"]},
+  {"id": "leaderboard", "title": "Leaderboard Service", "difficulty": "Medium", "minutes": 60, "kind": "debug",
+   "summary": "Fix best-score tracking, 1-2-2-4 ranking, tie order, a corrupted TreeSet, pagination and lost concurrent updates.",
+   "tags": ["Debugging", "Ranking", "Data Structures", "Concurrency"]}
 ]

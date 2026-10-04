@@ -71,6 +71,10 @@ public final class Assert {
         assertNotNull(value, "unexpected null");
     }
 
+    public static void assertNull(Object value) {
+        assertNull(value, "expected null");
+    }
+
     public static void assertNull(Object value, String message) {
         if (value != null) fail(message + " ==> expected null but was <" + value + ">");
     }
