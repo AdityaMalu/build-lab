@@ -138,6 +138,8 @@ public class LabServer {
                 send(ex, 200, "application/json", "{\"mode\":\"" + (hosted ? "hosted" : "local") + "\"}");
             } else if (path.equals("/api/projects") && method.equals("GET")) {
                 send(ex, 200, "application/json", catalogWithProgress());
+            } else if (parts[0].equals("tests") && parts.length == 2 && method.equals("GET")) {
+                send(ex, 200, "application/json", testsJson(id(parts[1])));
             } else if (parts[0].equals("project") && parts.length == 2 && method.equals("GET")) {
                 send(ex, 200, "application/json", projectDetail(id(parts[1])));
             } else if (hosted && parts[0].equals("file") && method.equals("GET")) {
@@ -146,7 +148,9 @@ public class LabServer {
                 Path file = resolveFile(id(q.get("project")), area, q.get("path"));
                 send(ex, 200, "text/plain; charset=utf-8", Files.readString(file));
             } else if (hosted && parts[0].equals("run") && parts.length == 2 && method.equals("POST")) {
-                send(ex, 200, "application/json", hostedRun(id(parts[1]), q.getOrDefault("mode", "workspace"), ex));
+                String pid = id(parts[1]);
+                send(ex, 200, "application/json",
+                        hostedRun(pid, q.getOrDefault("mode", "workspace"), selection(pid, q.get("tests")), ex));
             } else if (hosted) {
                 send(ex, 404, "application/json", "{\"error\":\"not available on the hosted site\"}");
             } else if (parts[0].equals("file") && method.equals("GET")) {
@@ -159,7 +163,8 @@ public class LabServer {
                 send(ex, 200, "application/json", "{\"ok\":true}");
             } else if (parts[0].equals("run") && parts.length == 2 && method.equals("POST")) {
                 String mode = q.getOrDefault("mode", "workspace");
-                send(ex, 200, "application/json", runTests(id(parts[1]), mode));
+                String pid = id(parts[1]);
+                send(ex, 200, "application/json", runTests(pid, mode, selection(pid, q.get("tests"))));
             } else if (parts[0].equals("reset") && parts.length == 2 && method.equals("POST")) {
                 String id = id(parts[1]);
                 deleteTree(workspace.resolve(id));
@@ -236,7 +241,7 @@ public class LabServer {
             System.exit(2);
         }
         java.util.regex.Matcher row = java.util.regex.Pattern.compile(
-                "\\{\"status\":\"(PASS|FAIL)\",\"suite\":\"(?:[^\"\\\\]|\\\\.)*\",\"name\":\"((?:[^\"\\\\]|\\\\.)*)\",\"millis\":\"(\\d+)\",\"message\":\"((?:[^\"\\\\]|\\\\.)*)\"\\}")
+                "\\{\"status\":\"(PASS|FAIL)\",\"suite\":\"(?:[^\"\\\\]|\\\\.)*\",\"method\":\"(?:[^\"\\\\]|\\\\.)*\",\"name\":\"((?:[^\"\\\\]|\\\\.)*)\",\"millis\":\"(\\d+)\",\"message\":\"((?:[^\"\\\\]|\\\\.)*)\"\\}")
                 .matcher(json);
         int failed = 0, total = 0;
         while (row.find()) {
@@ -257,6 +262,10 @@ public class LabServer {
     }
 
     static String runTests(String id, String mode) throws Exception {
+        return runTests(id, mode, null);
+    }
+
+    static String runTests(String id, String mode, List<String> only) throws Exception {
         Path dir = projects.resolve(id);
         Path src = switch (mode) {
             case "solution" -> dir.resolve("solution/src");
@@ -266,8 +275,8 @@ public class LabServer {
                 yield workspace.resolve(id).resolve("src");
             }
         };
-        Suite s = runSuite(id, src, build.resolve(id).resolve(mode), hosted);
-        if (!hosted && mode.equals("workspace")) {
+        Suite s = runSuite(id, src, build.resolve(id).resolve(mode), hosted, only);
+        if (!hosted && mode.equals("workspace") && only == null) { // a partial run proves nothing about "solved"
             if (s.ok) setProgress(id, "solved");
             else setProgressIfEmpty(id, "attempted");
         }
@@ -276,8 +285,74 @@ public class LabServer {
 
     record Suite(String json, boolean ok) {}
 
+    /** Fully qualified names of the project's test classes. */
+    static List<String> testClasses(String id) throws IOException {
+        Path tests = projects.resolve(id).resolve("tests/src");
+        List<String> out = new ArrayList<>();
+        for (Path p : listJavaAbs(tests)) {
+            String rel = tests.relativize(p).toString().replace('\\', '/');
+            if (rel.endsWith("Test.java")) out.add(rel.substring(0, rel.length() - 5).replace('/', '.'));
+        }
+        return out;
+    }
+
+    /**
+     * Parses ?tests=SuiteTest#method,SuiteTest#other into runner arguments (pkg.SuiteTest#method).
+     * Returns null for "run everything".
+     */
+    static List<String> selection(String id, String raw) throws IOException {
+        if (raw == null || raw.isBlank()) return null;
+        Map<String, String> bySimpleName = new LinkedHashMap<>();
+        for (String fqn : testClasses(id)) bySimpleName.put(fqn.substring(fqn.lastIndexOf('.') + 1), fqn);
+        List<String> out = new ArrayList<>();
+        for (String item : raw.split(",")) {
+            String t = item.trim();
+            if (t.isEmpty()) continue;
+            if (!t.matches("[A-Za-z_][A-Za-z0-9_]*#[A-Za-z_][A-Za-z0-9_]*")) throw new IllegalArgumentException("bad test id " + t);
+            String fqn = bySimpleName.get(t.substring(0, t.indexOf('#')));
+            if (fqn == null) throw new IllegalArgumentException("unknown test suite in " + t);
+            out.add(fqn + t.substring(t.indexOf('#')));
+        }
+        if (out.isEmpty()) return null;
+        if (out.size() > 500) throw new IllegalArgumentException("too many tests selected");
+        return out;
+    }
+
+    static final java.util.regex.Pattern TEST_ANNOTATION = java.util.regex.Pattern.compile(
+            "@Test\\b(?:\\s*\\(\\s*(?:value\\s*=\\s*)?(?:\"((?:[^\"\\\\]|\\\\.)*)\")?[^)]*\\))?");
+    static final java.util.regex.Pattern METHOD_DECL = java.util.regex.Pattern.compile("void\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(");
+
+    /** All tests in source order, read from the test files: [{suite, method, name, file, line}]. */
+    static String testsJson(String id) throws IOException {
+        Path tests = projects.resolve(id).resolve("tests/src");
+        if (!Files.isDirectory(tests)) throw new IllegalArgumentException("unknown project " + id);
+        StringBuilder sb = new StringBuilder("[");
+        for (Path p : listJavaAbs(tests)) {
+            String rel = tests.relativize(p).toString().replace('\\', '/');
+            if (!rel.endsWith("Test.java")) continue;
+            String suite = p.getFileName().toString().replace(".java", "");
+            String text = Files.readString(p);
+            java.util.regex.Matcher a = TEST_ANNOTATION.matcher(text);
+            while (a.find()) {
+                java.util.regex.Matcher m = METHOD_DECL.matcher(text);
+                if (!m.find(a.end())) break;
+                String method = m.group(1);
+                String name = a.group(1) == null ? method : unjson(a.group(1));
+                int line = 1;
+                for (int i = 0; i < m.start(); i++) if (text.charAt(i) == '\n') line++;
+                if (sb.length() > 1) sb.append(',');
+                sb.append("{\"suite\":").append(json(suite))
+                        .append(",\"method\":").append(json(method))
+                        .append(",\"name\":").append(json(name))
+                        .append(",\"file\":").append(json(rel))
+                        .append(",\"line\":").append(line).append('}');
+            }
+        }
+        return sb.append(']').toString();
+    }
+
     /** Hosted: the visitor's files arrive in the request body; nothing is kept afterwards. */
-    static String hostedRun(String id, String mode, HttpExchange ex) throws Exception {
+    static String hostedRun(String id, String mode, List<String> only, HttpExchange ex) throws Exception {
         if (!Files.isDirectory(projects.resolve(id))) throw new IllegalArgumentException("unknown project " + id);
         Map<String, String> files = mode.equals("solution") ? Map.of() : parseFlatJson(readBody(ex, 1_000_000));
         if (!mode.equals("solution")) {
@@ -305,7 +380,7 @@ public class LabServer {
                     Files.writeString(f, e.getValue());
                 }
             }
-            return runSuite(id, src, tmp.resolve("out"), true).json;
+            return runSuite(id, src, tmp.resolve("out"), true, only).json;
         } finally {
             RUN_SLOTS.release();
             try {
@@ -323,7 +398,7 @@ public class LabServer {
      *   user  (code being tested)   -> sandboxed when {@code sandbox} is true
      * The run classpath puts kit and tests first, so user code can't shadow them.
      */
-    static Suite runSuite(String id, Path src, Path out, boolean sandbox) throws Exception {
+    static Suite runSuite(String id, Path src, Path out, boolean sandbox, List<String> only) throws Exception {
         Path tests = projects.resolve(id).resolve("tests/src");
         deleteTree(out);
         Path user = out.resolve("user");
@@ -358,24 +433,23 @@ public class LabServer {
             timeout = 90;
         }
         cmd.add("testkit.TestRunner");
-        for (Path p : listJavaAbs(tests)) {
-            String rel = tests.relativize(p).toString().replace('\\', '/');
-            if (rel.endsWith("Test.java")) cmd.add(rel.substring(0, rel.length() - 5).replace('/', '.'));
-        }
+        if (only != null) cmd.addAll(only);
+        else cmd.addAll(testClasses(id));
         Proc run = exec(cmd, timeout);
 
         StringBuilder results = new StringBuilder("[");
         StringBuilder other = new StringBuilder();
         int passed = 0, failed = 0, total = 0;
         for (String line : run.output.split("\\R")) {
-            String[] f = line.split("\\|", 5);
-            if ((f[0].equals("PASS") || f[0].equals("FAIL")) && f.length >= 4) {
+            String[] f = line.split("\\|", 6);
+            if ((f[0].equals("PASS") || f[0].equals("FAIL")) && f.length >= 5) {
                 if (results.length() > 1) results.append(',');
                 results.append("{\"status\":").append(json(f[0]))
                         .append(",\"suite\":").append(json(f[1]))
-                        .append(",\"name\":").append(json(f[2]))
-                        .append(",\"millis\":").append(json(f[3]))
-                        .append(",\"message\":").append(json(f.length > 4 ? f[4] : ""))
+                        .append(",\"method\":").append(json(f[2]))
+                        .append(",\"name\":").append(json(f[3]))
+                        .append(",\"millis\":").append(json(f[4]))
+                        .append(",\"message\":").append(json(f.length > 5 ? f[5] : ""))
                         .append('}');
             } else if (f[0].equals("RESULT") && f.length >= 4) {
                 passed = Integer.parseInt(f[1]);
@@ -389,7 +463,8 @@ public class LabServer {
         if (run.timedOut) other.append("Test process killed after ").append(timeout).append("s.\n");
         else if (total == 0) other.append("The test process ended before reporting results (did the code call System.exit or crash the JVM?).\n");
         boolean ok = total > 0 && failed == 0 && !run.timedOut;
-        return new Suite("{\"phase\":\"test\",\"ok\":" + ok + ",\"output\":" + json(other.toString())
+        return new Suite("{\"phase\":\"test\",\"ok\":" + ok + ",\"partial\":" + (only != null)
+                + ",\"output\":" + json(other.toString())
                 + ",\"results\":" + results + ",\"passed\":" + passed + ",\"failed\":" + failed
                 + ",\"total\":" + total + ",\"millis\":" + (System.currentTimeMillis() - t0) + "}", ok);
     }

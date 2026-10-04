@@ -265,15 +265,27 @@
       else await api("/api/reset/" + id, { method: "POST" });
       d.buffers = {};
       d.dirty.clear();
+      for (const f of info.workspace) d.buffers[f] = await loadFile(d, f);
       await openFile(d, d.current, true);
       drawFileTabs(d);
+      d.hash = codeHash(d);
+      renderTestList(d);
       toast("Starter code restored");
     });
 
+    d.tests = await api("/api/tests/" + id);
+    d.results = lsGet(resultsKey(id), {}) || {};
+    d.selected = new Set();
+    d.running = null;
+    d.compileError = null;
+    setupTestControls(d);
+
     showLeft(d, "spec");
     drawFileTabs(d);
-    const firstFile = await pickInitialFile(d);
+    const firstFile = await pickInitialFile(d); // also loads every file into d.buffers
     if (firstFile) await openFile(d, firstFile);
+    d.hash = codeHash(d);
+    renderTestList(d);
   }
 
   async function pickInitialFile(d) {
@@ -337,9 +349,147 @@
     const text = await api(`/api/file?project=${id}&area=${area}&path=${encodeURIComponent(file)}`);
     const wrap = document.createElement("div");
     wrap.className = "code-view";
+    wrap.dataset.file = file;
     wrap.innerHTML = `<h4>${esc(file)}</h4><pre><code></code></pre>`;
-    wrap.querySelector("code").textContent = text;
+    // one element per line so a test can be scrolled to and highlighted
+    wrap.querySelector("code").innerHTML = text.split("\n")
+      .map((line, i) => `<span class="code-line" data-line="${i + 1}">${esc(line) || " "}</span>`).join("");
     container.appendChild(wrap);
+  }
+
+  /** Opens the Tests tab at the given test method and flashes it. */
+  async function showTest(d, t) {
+    await showLeft(d, "tests");
+    const view = [...document.querySelectorAll("#leftBody .code-view")].find((v) => v.dataset.file === t.file);
+    if (!view) return;
+    // include the annotation line above the method declaration
+    const target = view.querySelector(`.code-line[data-line="${Math.max(1, t.line - 1)}"]`);
+    const lines = [t.line - 1, t.line].map((n) => view.querySelector(`.code-line[data-line="${n}"]`)).filter(Boolean);
+    if (target) target.scrollIntoView({ block: "center" });
+    lines.forEach((el) => el.classList.add("flash"));
+    setTimeout(() => lines.forEach((el) => el.classList.remove("flash")), 2200);
+  }
+
+  // ------------------------------------------------------------ per-test results
+  const testKey = (t) => `${t.suite}#${t.method}`;
+  const resultsKey = (id) => `buildlab.results.${id}`;
+
+  /** Cheap fingerprint of the editable code, so results know which version they were run against. */
+  function codeHash(d) {
+    let h = 0x811c9dc5;
+    for (const f of d.info.workspace) {
+      const s = f + "\u0000" + (d.buffers[f] ?? "") + "\u0001";
+      for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+      }
+    }
+    return (h >>> 0).toString(36);
+  }
+
+  function isStale(d, r) {
+    return r && r.hash !== d.hash;
+  }
+
+  function renderTestList(d) {
+    const body = document.getElementById("resultsBody");
+    const parts = [];
+    if (d.compileError) {
+      parts.push('<pre class="compile-out" id="compileOut"></pre>');
+    }
+    const multipleSuites = new Set(d.tests.map((t) => t.suite)).size > 1;
+    let lastSuite = null;
+    for (const t of d.tests) {
+      const key = testKey(t);
+      if (multipleSuites && t.suite !== lastSuite) {
+        parts.push(`<div class="suite-label">${esc(t.suite)}</div>`);
+        lastSuite = t.suite;
+      }
+      const r = d.results[key];
+      const running = d.running && d.running.has(key);
+      const dot = running ? "running" : r ? (r.status === "PASS" ? "pass" : "fail") : "none";
+      const stale = !running && isStale(d, r);
+      parts.push(`<div class="test-row${stale ? " stale" : ""}" data-key="${esc(key)}">
+        <input type="checkbox" ${d.selected.has(key) ? "checked" : ""} aria-label="Select ${esc(t.name)}">
+        <span class="dot ${dot}" title="${dot === "none" ? "not run yet" : dot}"></span>
+        <button class="tname" title="Show this test's code">${esc(t.name)}</button>
+        <span class="ms">${r && !running ? esc(r.millis) + " ms" : ""}</span>
+        <button class="run1" title="Run just this test" aria-label="Run ${esc(t.name)}">
+          <svg viewBox="0 0 24 24" width="12" height="12"><path d="M7 4l13 8-13 8z" fill="currentColor"/></svg>
+        </button>
+        ${r && r.status === "FAIL" && !running ? `<div class="msg">${esc(r.message)}</div>` : ""}
+      </div>`);
+    }
+    body.innerHTML = parts.join("");
+    if (d.compileError) body.querySelector("#compileOut").textContent = d.compileError;
+
+    body.querySelectorAll(".test-row").forEach((row) => {
+      const key = row.dataset.key;
+      const t = d.tests.find((x) => testKey(x) === key);
+      row.querySelector("input").addEventListener("change", (e) => {
+        if (e.target.checked) d.selected.add(key);
+        else d.selected.delete(key);
+        updateTestControls(d);
+      });
+      row.querySelector(".tname").addEventListener("click", () => showTest(d, t));
+      row.querySelector(".run1").addEventListener("click", () => runTests(d, "workspace", [key]));
+    });
+    updateTestControls(d);
+  }
+
+  /** Refreshes the summary line, buttons and select-all box without rebuilding rows. */
+  function updateTestControls(d) {
+    const total = d.tests.length;
+    const fresh = d.tests.map((t) => d.results[testKey(t)]).filter((r) => r && !isStale(d, r));
+    const passing = fresh.filter((r) => r.status === "PASS").length;
+    const failingKeys = d.tests.filter((t) => d.results[testKey(t)]?.status === "FAIL").map(testKey);
+    const staleCount = d.tests.filter((t) => isStale(d, d.results[testKey(t)])).length;
+    const summary = document.getElementById("resultSummary");
+    if (!d.running) {
+      if (d.compileError) summary.innerHTML = '<span class="summary-fail">Compilation failed</span>';
+      else if (!Object.keys(d.results).length) summary.textContent = `${total} tests · not run yet`;
+      else {
+        const cls = passing === total ? "summary-pass" : "summary-fail";
+        summary.innerHTML = `<span class="${cls}">${passing} / ${total} passing</span>`
+          + (staleCount ? ` <span class="muted">· ${staleCount} out of date</span>` : "");
+      }
+    }
+    const runFailed = document.getElementById("runFailedBtn");
+    runFailed.disabled = !!d.running || failingKeys.length === 0;
+    runFailed.textContent = failingKeys.length ? `Run failed (${failingKeys.length})` : "Run failed";
+    const runSel = document.getElementById("runSelectedBtn");
+    runSel.disabled = !!d.running || d.selected.size === 0;
+    runSel.textContent = d.selected.size ? `Run selected (${d.selected.size})` : "Run selected";
+    const all = document.getElementById("selectAll");
+    all.checked = d.selected.size > 0 && d.selected.size === total;
+    all.indeterminate = d.selected.size > 0 && d.selected.size < total;
+  }
+
+  /** Called while typing: fade results that no longer match the code. */
+  function refreshStaleness(d) {
+    clearTimeout(d.staleTimer);
+    d.staleTimer = setTimeout(() => {
+      d.hash = codeHash(d);
+      document.querySelectorAll("#resultsBody .test-row").forEach((row) => {
+        row.classList.toggle("stale", !(d.running && d.running.has(row.dataset.key)) && isStale(d, d.results[row.dataset.key]));
+      });
+      updateTestControls(d);
+    }, 250);
+  }
+
+  function setupTestControls(d) {
+    document.getElementById("selectAll").addEventListener("change", (e) => {
+      d.selected = e.target.checked ? new Set(d.tests.map(testKey)) : new Set();
+      renderTestList(d);
+    });
+    document.getElementById("runSelectedBtn").addEventListener("click", () => runTests(d, "workspace", [...d.selected]));
+    document.getElementById("runFailedBtn").addEventListener("click", () => runFailed(d));
+  }
+
+  function runFailed(d) {
+    const keys = d.tests.filter((t) => d.results[testKey(t)]?.status === "FAIL").map(testKey);
+    if (keys.length) runTests(d, "workspace", keys);
+    else toast("No failing tests to re-run");
   }
 
   function setupEditor(d) {
@@ -359,6 +509,8 @@
           "Cmd-S": () => saveAll(d).then(() => toast("Saved")),
           "Ctrl-Enter": () => runTests(d),
           "Cmd-Enter": () => runTests(d),
+          "Shift-Ctrl-Enter": () => runFailed(d),
+          "Shift-Cmd-Enter": () => runFailed(d),
         },
       });
       d.cm.on("change", () => markDirty(d));
@@ -368,7 +520,7 @@
       ta.addEventListener("input", () => markDirty(d));
       ta.addEventListener("keydown", (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); saveAll(d).then(() => toast("Saved")); }
-        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); runTests(d); }
+        if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); e.shiftKey ? runFailed(d) : runTests(d); }
       });
     }
   }
@@ -389,6 +541,7 @@
   function markDirty(d) {
     if (d.loading || !d.current) return;
     d.buffers[d.current] = editorValue(d);
+    if (d.tests) refreshStaleness(d);
     if (state.hosted) {
       // autosave to this browser on every keystroke (cheap: a few KB)
       if (!lsSet(codeKey(d.project.id, d.current), d.buffers[d.current]) && !d.warnedStorage) {
@@ -440,16 +593,103 @@
     drawFileTabs(d);
   }
 
-  async function runTests(d, mode = "workspace") {
+  /**
+   * Runs all tests (keys = null) or just the given "Suite#method" keys.
+   * Results are remembered per test together with the code version they ran against.
+   */
+  async function runTests(d, mode = "workspace", keys = null) {
+    if (mode === "solution") return runSolution(d);
+    const btn = document.getElementById("runBtn");
+    const summary = document.getElementById("resultSummary");
+    if (d.running) return;
+    const wanted = keys && keys.length ? keys : d.tests.map(testKey);
+    const partial = !!(keys && keys.length && keys.length < d.tests.length);
+    btn.disabled = true;
+    d.running = new Set(wanted);
+    d.compileError = null;
+    d.extraOutput = null;
+    renderTestList(d);
+    summary.innerHTML = `<span class="spinner"></span> Running ${wanted.length === 1 ? "1 test" : wanted.length + " tests"}...`;
+    try {
+      await saveAll(d);
+      const sentHash = codeHash(d);
+      let body;
+      if (state.hosted) {
+        const files = {};
+        for (const f of d.info.workspace) {
+          if (d.buffers[f] === undefined) d.buffers[f] = await loadFile(d, f);
+          files[f] = d.buffers[f];
+        }
+        body = JSON.stringify(files);
+      }
+      const qs = partial ? "&tests=" + encodeURIComponent(wanted.join(",")) : "";
+      const r = await api(`/api/run/${d.project.id}?mode=workspace${qs}`, {
+        method: "POST",
+        body,
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+      });
+
+      if (r.phase === "compile") {
+        d.compileError = r.output;
+      } else {
+        const seen = new Set();
+        for (const t of r.results) {
+          const key = `${t.suite}#${t.method}`;
+          seen.add(key);
+          d.results[key] = { status: t.status, millis: t.millis, message: t.message, hash: sentHash };
+        }
+        for (const key of wanted) {
+          if (!seen.has(key)) {
+            d.results[key] = { status: "FAIL", millis: "-", hash: sentHash,
+              message: (r.output || "").trim().split("\n").pop() || "The test did not report a result." };
+          }
+        }
+        if (r.output && r.output.trim()) d.extraOutput = r.output;
+        lsSet(resultsKey(d.project.id), d.results);
+      }
+      d.running = null;
+      d.hash = codeHash(d);
+      renderTestList(d);
+      if (d.extraOutput) {
+        const pre = document.createElement("pre");
+        pre.className = "compile-out";
+        pre.style.color = "var(--muted)";
+        pre.textContent = d.extraOutput;
+        document.getElementById("resultsBody").appendChild(pre);
+      }
+
+      // solved = every test passed against the current code (possibly over several partial runs)
+      const before = statusOf(d.project.id);
+      const allPass = d.tests.every((t) => {
+        const res = d.results[testKey(t)];
+        return res && res.status === "PASS" && !isStale(d, res);
+      });
+      const after = allPass ? "solved" : before === "todo" ? "attempted" : before;
+      if (after !== before) setStatus(d.project.id, after);
+      document.getElementById("statusSel").value = statusOf(d.project.id);
+      if (allPass && before !== "solved") toast("All tests pass. Solved! 🎉");
+    } catch (e) {
+      d.running = null;
+      renderTestList(d);
+      summary.innerHTML = `<span class="summary-fail">Error</span> <span class="muted">${esc(e.message)}</span>`;
+    } finally {
+      d.running = null;
+      btn.disabled = false;
+      updateTestControls(d);
+    }
+  }
+
+  /** Runs the suite against the reference solution and shows it temporarily (doesn't touch your results). */
+  async function runSolution(d) {
     const btn = document.getElementById("runBtn");
     const summary = document.getElementById("resultSummary");
     const out = document.getElementById("resultsBody");
-    if (btn.disabled) return;
+    if (btn.disabled || d.running) return;
     btn.disabled = true;
     try {
-      if (mode === "workspace") await saveAll(d);
-      summary.innerHTML = `<span class="spinner"></span> ${mode === "solution" ? "Running tests on the reference solution..." : "Compiling and running tests..."}`;
+      summary.innerHTML = '<span class="spinner"></span> Running tests on the reference solution...';
       out.innerHTML = "";
+      const mode = "solution";
       let body;
       if (state.hosted && mode === "workspace") {
         const files = {};
@@ -487,17 +727,11 @@
         pre.textContent = r.output;
         out.appendChild(pre);
       }
-      if (mode === "workspace") {
-        const before = statusOf(d.project.id);
-        const after = r.ok ? "solved" : before === "todo" ? "attempted" : before;
-        if (state.hosted) setStatus(d.project.id, after);
-        else {
-          if (after !== "todo") state.progress[d.project.id] = after; // server already recorded it
-          updateProgress();
-        }
-        document.getElementById("statusSel").value = statusOf(d.project.id);
-        if (r.ok && before !== "solved") toast("Solved! Nice work.");
-      }
+      const back = document.createElement("div");
+      back.className = "results-foot";
+      back.innerHTML = '<button class="btn ghost sm">← Back to my test results</button>';
+      back.querySelector("button").addEventListener("click", () => renderTestList(d));
+      out.prepend(back);
     } catch (e) {
       summary.innerHTML = `<span class="summary-fail">Error</span> <span class="muted">${esc(e.message)}</span>`;
     } finally {

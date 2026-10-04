@@ -101,12 +101,15 @@
       <div class="editor-wrap"><textarea id="editor"></textarea></div>
       <div class="results" id="results">
         <div class="results-head">
-          <strong>Test results</strong>
-          <span class="muted" id="resultSummary">Run the tests to see results.</span>
+          <input type="checkbox" id="selectAll" title="Select all tests" aria-label="Select all tests">
+          <strong>Tests</strong>
+          <span class="muted" id="resultSummary"></span>
           <span class="spacer"></span>
-          <span class="muted small" id="pathHint"></span>
+          <button class="btn ghost sm" id="runFailedBtn" title="Ctrl+Shift+Enter" disabled>Run failed</button>
+          <button class="btn ghost sm" id="runSelectedBtn" disabled>Run selected</button>
         </div>
         <div class="results-body" id="resultsBody"></div>
+        <div class="results-foot muted small" id="pathHint"></div>
       </div>
     </div>
   </section>
