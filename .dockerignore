@@ -1,0 +1,7 @@
+.git
+.github
+.devcontainer
+workspace
+build
+.jdk
+*.class

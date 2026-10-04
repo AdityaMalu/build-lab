@@ -1,0 +1,15 @@
+# Render blueprint: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: build-lab
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/config
+    envVars:
+      - key: LAB_MODE
+        value: hosted
+      - key: LAB_PARALLEL_RUNS
+        value: "1"
+      - key: LAB_TEST_HEAP
+        value: 200m

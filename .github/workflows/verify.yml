@@ -1,0 +1,50 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  solutions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Every reference solution passes its tests
+        run: |
+          set -e
+          for id in $(jq -r '.[].id' projects/catalog.json); do
+            echo "::group::$id (solution)"
+            java server/LabServer.java test "$id" solution
+            echo "::endgroup::"
+          done
+
+      - name: Every starter compiles (tests are expected to fail)
+        run: |
+          for id in $(jq -r '.[].id' projects/catalog.json); do
+            out=$(java server/LabServer.java test "$id" starter || true)
+            if echo "$out" | grep -q "COMPILATION FAILED"; then
+              echo "$out"; echo "::error::starter for $id does not compile"; exit 1
+            fi
+            echo "$id: $(echo "$out" | tail -n 1)"
+          done
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image and smoke-test hosted mode
+        run: |
+          docker build -t build-lab .
+          docker run -d --name lab -p 8080:8080 build-lab
+          for i in $(seq 1 30); do curl -sf localhost:8080/api/config && break; sleep 2; done
+          curl -sf localhost:8080/api/config | grep -q hosted
+          curl -sf -X POST "localhost:8080/api/run/rate-limiter?mode=solution" | tee result.json
+          grep -q '"ok":true' result.json
+          docker logs lab

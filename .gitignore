@@ -1,0 +1,16 @@
+# personal progress & code (stays on your machine)
+workspace/
+
+# build output
+build/
+*.class
+
+# portable JDK, if downloaded into the lab
+.jdk/
+
+# editors / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
