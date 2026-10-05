@@ -105,6 +105,7 @@ any moment without data loss. The trade-off (work lives in one browser) is mitig
 | PUT | `/api/file?...` | save a workspace file (local only) |
 | POST | `/api/reset/{id}?lang=` | restore starter (local only) |
 | POST | `/api/status/{id}?lang=` | set todo/attempted/solved (local only) |
+| GET | `/metrics` | Prometheus metrics: runs by language/outcome, time per phase, run slots, heap (token-protected when `LAB_METRICS_TOKEN` is set) |
 
 Run response:
 ```json
@@ -208,6 +209,10 @@ Each run has a wall-clock timeout (90 s sandboxed, 180 s locally); a process tha
 - Upload filenames per language regex (e.g. Go must be `pkg/file.go`, never `_test.go`, so tests can't be replaced).
 - Path normalisation + `startsWith(root)` check on every file access (no `../` traversal).
 - Go source bans `import "C"`, `unsafe`, `os/exec`, `plugin`, `//go:linkname`, `//go:cgo*`, `//go:embed`.
+
+### 4.9 Observability
+Every run writes one JSON log line (language, project, outcome, queue/compile/exec/total ms) to stdout and,
+optionally, Grafana Loki, and updates Prometheus counters and histograms on `/metrics`. Details: [OBSERVABILITY.md](OBSERVABILITY.md).
 
 ---
 

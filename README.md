@@ -114,6 +114,7 @@ All specs, code and tests here are original material written for practice.
 ## Design docs
 - [Architecture (HLD + LLD)](docs/ARCHITECTURE.md): components, API, run pipeline, sandbox, CI/CD, trade-offs
 - [Scaling plan](docs/SCALING_PLAN.md): job queue + gVisor workers, warm pools, accounts, distributed rate limiting, observability (free tier only)
+- [Observability](docs/OBSERVABILITY.md): run logs, `/metrics`, Grafana Cloud setup and dashboard
 
 ## Contributing
 New projects, ports to other languages and fixes are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).

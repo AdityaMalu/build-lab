@@ -13,3 +13,12 @@ services:
         value: "1"
       - key: LAB_TEST_HEAP
         value: 200m
+      # Observability (docs/OBSERVABILITY.md). Secrets: set in the Render dashboard, never in this file.
+      - key: LAB_METRICS_TOKEN
+        sync: false
+      - key: LAB_LOKI_URL
+        sync: false
+      - key: LAB_LOKI_USER
+        sync: false
+      - key: LAB_LOKI_TOKEN
+        sync: false

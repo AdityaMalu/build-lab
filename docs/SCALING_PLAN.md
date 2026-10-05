@@ -52,7 +52,7 @@ flowchart LR
 
 ---
 
-## Phase 1: Observability first (≈1–2 days, works on today's Render setup)
+## Phase 1: Observability first (≈1–2 days, works on today's Render setup): **built**, see [OBSERVABILITY.md](OBSERVABILITY.md)
 
 Measure before optimising, so the "< 5 s" goal has a baseline.
 

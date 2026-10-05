@@ -110,6 +110,16 @@
   function statusOf(id) {
     return state.progress[pkey(id)] || "todo";
   }
+  // " (waited 2.0s, compile 21.3s, tests 1.2s)": where a run's time went, as reported by the server
+  function timingText(t) {
+    if (!t) return "";
+    const s = (ms) => (ms / 1000).toFixed(1) + "s";
+    const parts = [];
+    if (t.queueMs >= 500) parts.push("waited " + s(t.queueMs));
+    if (t.compileMs >= 500) parts.push("compile " + s(t.compileMs));
+    if (t.execMs > 0) parts.push("tests " + s(t.execMs));
+    return parts.length > 1 ? ` (${parts.join(", ")})` : "";
+  }
   function renderMarkdown(md) {
     if (window.marked) return window.marked.parse(md);
     return "<pre>" + esc(md) + "</pre>"; // CDN unavailable: still readable
@@ -365,11 +375,9 @@
   async function pickInitialFile(d) {
     // Open the first file that still has TODOs; otherwise the main service class.
     const files = d.info.workspace;
-    for (const f of files) {
-      const text = await loadFile(d, f);
-      d.buffers[f] = text;
-      if (text.includes("TODO")) return f;
-    }
+    for (const f of files) d.buffers[f] = await loadFile(d, f);
+    const todo = files.find((f) => d.buffers[f].includes("TODO"));
+    if (todo) return todo;
     const main = files.find((f) => /(Service|Shortener|Deduplicator|Pipeline|Engine|Gate|Recommender|Repair)\.java$/.test(f));
     return main || files[0];
   }
@@ -542,7 +550,8 @@
       else {
         const cls = passing === total ? "summary-pass" : "summary-fail";
         summary.innerHTML = `<span class="${cls}">${passing} / ${total} passing</span>`
-          + (staleCount ? ` <span class="muted">· ${staleCount} out of date</span>` : "");
+          + (staleCount ? ` <span class="muted">· ${staleCount} out of date</span>` : "")
+          + (d.lastRun ? ` <span class="muted">· last run ${(d.lastRun.millis / 1000).toFixed(1)}s${timingText(d.lastRun.timing)}</span>` : "");
       }
     }
     const runFailed = document.getElementById("runFailedBtn");
@@ -705,7 +714,6 @@
     summary.innerHTML = `<span class="spinner"></span> Running ${wanted.length === 1 ? "1 test" : wanted.length + " tests"}...`;
     try {
       await saveAll(d);
-      const sentHash = codeHash(d);
       let body;
       if (state.hosted) {
         const files = {};
@@ -715,6 +723,7 @@
         }
         body = JSON.stringify(files);
       }
+      const sentHash = codeHash(d); // after loading unopened files, or results look out of date at once
       const qs = partial ? "&tests=" + encodeURIComponent(wanted.join(",")) : "";
       const r = await api(`/api/run/${d.project.id}?${langQ()}&mode=workspace${qs}`, {
         method: "POST",
@@ -722,6 +731,7 @@
         headers: body ? { "Content-Type": "application/json" } : undefined,
       });
 
+      d.lastRun = r.phase === "compile" ? null : { millis: r.millis, timing: r.timing };
       if (r.phase === "compile") {
         d.compileError = r.output;
       } else {
@@ -804,9 +814,10 @@
         return;
       }
       const label = mode === "solution" ? " (reference solution)" : "";
+      const time = `<span class="muted">${(r.millis / 1000).toFixed(1)}s${timingText(r.timing)}${label}</span>`;
       summary.innerHTML = r.ok
-        ? `<span class="summary-pass">All ${r.total} tests passed</span> <span class="muted">${(r.millis / 1000).toFixed(1)}s${label}</span>`
-        : `<span class="summary-fail">${r.failed} of ${r.total} failed</span> <span class="muted">${(r.millis / 1000).toFixed(1)}s${label}</span>`;
+        ? `<span class="summary-pass">All ${r.total} tests passed</span> ${time}`
+        : `<span class="summary-fail">${r.failed} of ${r.total} failed</span> ${time}`;
       const rows = [...r.results].sort((a, b) => (a.status === b.status ? 0 : a.status === "FAIL" ? -1 : 1));
       out.innerHTML = rows.map((t) => `<div class="result-row">
           <span class="dot ${t.status === "PASS" ? "pass" : "fail"}"></span>

@@ -64,9 +64,16 @@ jobs:
         run: |
           for lang in java python go cpp; do
             curl -sf -X POST "localhost:8080/api/run/rate-limiter?mode=solution&lang=$lang" > "result-$lang.json"
-            echo "$lang: $(jq -c '{ok, passed, total}' "result-$lang.json")"
+            echo "$lang: $(jq -c '{ok, passed, total, timing}' "result-$lang.json")"
             jq -e '.ok == true' "result-$lang.json" > /dev/null || { cat "result-$lang.json"; exit 1; }
           done
+      - name: Metrics count the runs
+        run: |
+          curl -sf localhost:8080/metrics > metrics.txt
+          for lang in java python go cpp; do
+            grep -q "^lab_runs_total{lang=\"$lang\",outcome=\"pass\"} 1$" metrics.txt || { cat metrics.txt; echo "::error::no pass metric for $lang"; exit 1; }
+          done
+          grep -c '"event":"run"' <(docker logs lab 2>&1)
       - name: Sandbox blocks forbidden operations
         run: bash .github/scripts/sandbox-probes.sh http://localhost:8080
       - name: Server log

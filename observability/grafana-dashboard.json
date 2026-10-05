@@ -1,0 +1,190 @@
+{
+  "__inputs": [
+    { "name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "pluginId": "prometheus", "pluginName": "Prometheus" },
+    { "name": "DS_LOKI", "label": "Loki", "type": "datasource", "pluginId": "loki", "pluginName": "Loki" }
+  ],
+  "title": "Build Lab",
+  "uid": "build-lab",
+  "description": "Test runs: volume, outcomes, p95 time per phase, queue wait, server memory, and the run log.",
+  "editable": true,
+  "schemaVersion": 39,
+  "tags": ["build-lab"],
+  "time": { "from": "now-24h", "to": "now" },
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "lang",
+        "label": "Language",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": { "query": "label_values(lab_runs_total, lang)", "refId": "lang" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Runs (selected range)",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(lab_runs_total{lang=~\"$lang\"}[$__range]))", "instant": true }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Pass rate of completed runs",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "expr": "sum(increase(lab_runs_total{lang=~\"$lang\",outcome=\"pass\"}[$__range])) / sum(increase(lab_runs_total{lang=~\"$lang\",outcome=~\"pass|fail|compile_error|timeout\"}[$__range]))"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "none" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 0 }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Rejected by rate limit / busy",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "legendFormat": "{{outcome}}",
+          "expr": "sum by (outcome) (increase(lab_runs_total{lang=~\"$lang\",outcome=~\"rate_limited|busy\"}[$__range]))"
+        }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Server heap used",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [ { "refId": "A", "expr": "lab_jvm_heap_used_bytes / lab_jvm_heap_max_bytes" } ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 0.8 }, { "color": "red", "value": 0.95 } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "p95 total run time by language (1h window)",
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{lang}}",
+          "expr": "histogram_quantile(0.95, sum by (le, lang) (rate(lab_run_seconds_bucket{phase=\"total\",lang=~\"$lang\"}[1h])))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "spanNulls": true, "pointSize": 4, "showPoints": "always" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 5 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "p95 by phase: queue / compile / exec (1h window)",
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{lang}} {{phase}}",
+          "expr": "histogram_quantile(0.95, sum by (le, lang, phase) (rate(lab_run_seconds_bucket{phase=~\"queue|compile|exec\",lang=~\"$lang\"}[1h])))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "spanNulls": true, "pointSize": 4, "showPoints": "always" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Runs per hour by outcome",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{outcome}}",
+          "interval": "1h",
+          "expr": "sum by (outcome) (increase(lab_runs_total{lang=~\"$lang\"}[1h]))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 70, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Run slots: active and waiting",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "refId": "A", "legendFormat": "active", "expr": "lab_runs_active" },
+        { "refId": "B", "legendFormat": "waiting", "expr": "lab_runs_waiting" },
+        { "refId": "C", "legendFormat": "slots", "expr": "lab_run_slots" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] }
+    },
+    {
+      "type": "table",
+      "title": "Slowest projects (max total ms in range)",
+      "gridPos": { "h": 9, "w": 10, "x": 0, "y": 22 },
+      "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "instant",
+          "expr": "topk(10, max_over_time({app=\"build-lab\"} | json | lang=~\"$lang\" | outcome=~\"pass|fail\" | unwrap total_ms [$__range]) by (lang, project))"
+        }
+      ],
+      "transformations": [ { "id": "reduce", "options": { "reducers": ["max"] } } ],
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] }
+    },
+    {
+      "type": "logs",
+      "title": "Runs that did not pass",
+      "gridPos": { "h": 9, "w": 14, "x": 10, "y": 22 },
+      "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{app=\"build-lab\"} | json | lang=~\"$lang\" | outcome != \"pass\" | line_format \"{{.outcome}}  {{.lang}}/{{.project}}  queue {{.queue_ms}}ms  compile {{.compile_ms}}ms  exec {{.exec_ms}}ms  {{.tests_passed}}/{{.tests_total}}\""
+        }
+      ],
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" }
+    }
+  ]
+}

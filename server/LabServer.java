@@ -62,8 +62,8 @@ public class LabServer {
      * (and Java's security manager / a seccomp filter installed by the harness).
      */
     static boolean hosted;
-    static final java.util.concurrent.Semaphore RUN_SLOTS = new java.util.concurrent.Semaphore(
-            Math.max(1, Integer.parseInt(System.getenv().getOrDefault("LAB_PARALLEL_RUNS", "2"))), true);
+    static final int PARALLEL_RUNS = Math.max(1, Integer.parseInt(System.getenv().getOrDefault("LAB_PARALLEL_RUNS", "2")));
+    static final java.util.concurrent.Semaphore RUN_SLOTS = new java.util.concurrent.Semaphore(PARALLEL_RUNS, true);
     static final Map<String, java.util.ArrayDeque<Long>> RUNS_BY_CLIENT = new java.util.HashMap<>();
     static final int RUNS_PER_WINDOW = 30;
     static final long RATE_WINDOW_MS = 10 * 60 * 1000L;
@@ -119,7 +119,9 @@ public class LabServer {
         String bind = hosted ? "0.0.0.0" : "127.0.0.1";
         HttpServer server = HttpServer.create(new InetSocketAddress(bind, port), 0);
         server.createContext("/api/", LabServer::api);
+        server.createContext("/metrics", LabServer::metrics);
         server.createContext("/", LabServer::staticFile);
+        startLogShipper();
         server.setExecutor(Executors.newFixedThreadPool(16));
         server.start();
         kitDir(); // compile the Java test kit once up front
@@ -167,7 +169,8 @@ public class LabServer {
                 String lang = lang(q.get("lang"));
                 List<String[]> only = selection(pid, lang, q.get("tests"));
                 String mode = q.getOrDefault("mode", "workspace");
-                send(ex, 200, "application/json", hosted ? hostedRun(pid, lang, mode, only, ex) : runTests(pid, lang, mode, only));
+                send(ex, 200, "application/json", observedRun(pid, lang, mode, only,
+                        () -> hosted ? hostedRun(pid, lang, mode, only, ex) : runTests(pid, lang, mode, only)));
             } else if (hosted) {
                 send(ex, 404, "application/json", "{\"error\":\"not available on the hosted site\"}");
             } else if (parts[0].equals("file") && method.equals("PUT")) {
@@ -432,7 +435,13 @@ public class LabServer {
             }
         }
         checkRateLimit(clientKey(ex));
+        long waitFrom = System.currentTimeMillis();
         if (!RUN_SLOTS.tryAcquire(30, TimeUnit.SECONDS)) throw new HttpError(503, "The server is busy, try again in a moment.");
+        RunCtx ctx = RUN_CTX.get();
+        if (ctx != null) {
+            ctx.startedAt = System.currentTimeMillis();
+            ctx.queueMs = ctx.startedAt - waitFrom;
+        }
         Path tmp = Files.createTempDirectory(build, "run-");
         try {
             Path src;
@@ -650,6 +659,7 @@ public class LabServer {
         String err = userSources.isEmpty() ? "No .java files to compile." : compile(userSources, user, user.toString());
         if (err == null) err = compile(listFilesAbs(tests, "java"), testOut, kitDir() + File.pathSeparator + user);
         if (err != null) return compileFailure(clean(err, src, tests), t0);
+        compiled();
         if (sandbox) openPermissions(out);
 
         String java = Paths.get(System.getProperty("java.home"), "bin", win ? "java.exe" : "java").toString();
@@ -702,6 +712,7 @@ public class LabServer {
         if (only != null) for (String[] t : only) cmd.add(t[0] + "#" + t[1]);
         int timeout = sandbox ? 90 : 180;
         Map<String, String> env = sandboxEnv(out, sandbox);
+        compiled(); // Python compiles on import, inside the run; syntax errors come back as COMPILE| lines
         Proc run = exec(sandboxed(cmd, sandbox), timeout, out, env);
         // the runner reports import/syntax errors as COMPILE| lines
         StringBuilder compile = new StringBuilder();
@@ -761,6 +772,7 @@ public class LabServer {
         if (compile.code != 0 || !Files.exists(bin)) {
             return compileFailure(clean(compile.output.replace(mod.toString() + File.separator, ""), src, tests), t0);
         }
+        compiled();
         List<String> cmd = new ArrayList<>(List.of(bin.toString(), "-test.v", "-test.timeout=60s", "-test.count=1"));
         if (only != null) {
             StringBuilder re = new StringBuilder("^(");
@@ -816,6 +828,7 @@ public class LabServer {
         if (compile.code != 0 || !Files.exists(bin)) {
             return compileFailure(clean(compile.output, src, tests).replace(kit.toString() + File.separator, "[kit] "), t0);
         }
+        compiled();
         List<String> run = new ArrayList<>(List.of(bin.toString()));
         if (only != null) for (String[] t : only) run.add(t[0] + "#" + t[1]);
         Proc p = exec(sandboxed(run, sandbox), sandbox ? 90 : 180, out, env);
@@ -971,6 +984,13 @@ public class LabServer {
             env.put("LANG", "C.UTF-8");
             env.put("HOME", out.toString());
             env.put("TMPDIR", out.resolve("tmp").toString());
+            if (win) { // trying hosted mode on Windows: compilers look for these instead
+                env.put("TEMP", out.resolve("tmp").toString());
+                env.put("TMP", out.resolve("tmp").toString());
+                env.put("SystemRoot", System.getenv().getOrDefault("SystemRoot", "C:\\Windows"));
+                env.put("LOCALAPPDATA", out.toString());
+                env.put("APPDATA", out.toString());
+            }
         }
         if (sandbox) env.put("LAB_SANDBOX", "1");
         try {
@@ -1048,6 +1068,247 @@ public class LabServer {
                     .append(d.getMessage(java.util.Locale.ENGLISH)).append('\n');
         }
         return sb.length() == 0 ? "compilation failed" : sb.toString();
+    }
+
+    // ------------------------------------------------------------------ telemetry
+    //
+    // One JSON log line per test run (stdout, plus Grafana Loki when LAB_LOKI_URL is set) and Prometheus metrics
+    // on /metrics. Metric labels stay low-cardinality (language, outcome, phase); the project id only goes into
+    // logs. Source code and client addresses are never logged.
+
+    /** Timings for the run on this request thread; the runners fill it in. */
+    static final class RunCtx {
+        final long createdAt = System.currentTimeMillis();
+        long startedAt = createdAt; // hosted: when a run slot was acquired
+        long queueMs;
+        long compileDoneAt;
+        boolean timedOut;
+    }
+
+    static final ThreadLocal<RunCtx> RUN_CTX = new ThreadLocal<>();
+    static final long STARTED_AT = System.currentTimeMillis();
+    static final double[] BUCKETS = {0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120, 240};
+    static final Map<String, java.util.concurrent.atomic.LongAdder> RUN_COUNTS = new java.util.concurrent.ConcurrentHashMap<>();
+    static final Map<String, Histogram> RUN_SECONDS = new java.util.concurrent.ConcurrentHashMap<>();
+    static final Pattern SUITE_COUNTS = Pattern.compile("\"passed\":(\\d+),\"failed\":\\d+,\"total\":(\\d+),\"millis\":-?\\d+\\}$");
+
+    /** Cumulative Prometheus-style histogram (bucket i counts observations <= BUCKETS[i]). */
+    static final class Histogram {
+        final long[] buckets = new long[BUCKETS.length];
+        long count;
+        double sum;
+
+        synchronized void observe(double seconds) {
+            for (int i = 0; i < BUCKETS.length; i++) if (seconds <= BUCKETS[i]) buckets[i]++;
+            count++;
+            sum += seconds;
+        }
+    }
+
+    /** Called by a runner once the code has compiled and the tests are about to start. */
+    static void compiled() {
+        RunCtx ctx = RUN_CTX.get();
+        if (ctx != null) ctx.compileDoneAt = System.currentTimeMillis();
+    }
+
+    /** Runs a test request, records its outcome and timings, and adds a "timing" object to the response. */
+    static String observedRun(String id, String lang, String target, List<String[]> only,
+                              java.util.concurrent.Callable<String> body) throws Exception {
+        RunCtx ctx = new RunCtx();
+        RUN_CTX.set(ctx);
+        String json;
+        try {
+            json = body.call();
+        } catch (Exception e) {
+            String outcome = e instanceof HttpError h
+                    ? (h.status == 429 ? "rate_limited" : h.status == 503 ? "busy" : h.status >= 500 ? "server_error" : "rejected")
+                    : e instanceof IllegalArgumentException || e instanceof SecurityException ? "rejected" : "server_error";
+            recordRun(id, lang, target, only, outcome, ctx, System.currentTimeMillis(), 0, 0);
+            throw e;
+        } finally {
+            RUN_CTX.remove();
+        }
+        long end = System.currentTimeMillis();
+        int passed = 0, total = 0;
+        Matcher m = SUITE_COUNTS.matcher(json);
+        if (m.find()) {
+            passed = Integer.parseInt(m.group(1));
+            total = Integer.parseInt(m.group(2));
+        }
+        String outcome = ctx.timedOut ? "timeout"
+                : json.startsWith("{\"phase\":\"compile\"") ? "compile_error"
+                : json.startsWith("{\"phase\":\"test\",\"ok\":true") ? "pass" : "fail";
+        long[] t = recordRun(id, lang, target, only, outcome, ctx, end, passed, total);
+        return json.substring(0, json.length() - 1) + ",\"timing\":{\"queueMs\":" + t[0] + ",\"compileMs\":" + t[1]
+                + ",\"execMs\":" + t[2] + "}}";
+    }
+
+    /** Updates the metrics and writes the log line; returns {queueMs, compileMs, execMs}. */
+    static long[] recordRun(String id, String lang, String target, List<String[]> only, String outcome, RunCtx ctx,
+                            long end, int passed, int total) {
+        boolean ran = switch (outcome) {
+            case "pass", "fail", "compile_error", "timeout" -> true;
+            default -> false;
+        };
+        long queueMs = ctx.queueMs;
+        long compileMs = ran ? (ctx.compileDoneAt > 0 ? ctx.compileDoneAt : end) - ctx.startedAt : 0;
+        long execMs = ran && ctx.compileDoneAt > 0 ? end - ctx.compileDoneAt : 0;
+        long totalMs = end - ctx.createdAt;
+
+        RUN_COUNTS.computeIfAbsent(lang + "|" + outcome, k -> new java.util.concurrent.atomic.LongAdder()).increment();
+        if (ran) {
+            observe(lang, "queue", queueMs);
+            observe(lang, "compile", compileMs);
+            if (ctx.compileDoneAt > 0) observe(lang, "exec", execMs);
+            observe(lang, "total", totalMs);
+        }
+
+        String line = "{\"event\":\"run\",\"ts\":" + json(java.time.Instant.ofEpochMilli(end).toString())
+                + ",\"run_id\":" + json(Long.toHexString(java.util.concurrent.ThreadLocalRandom.current().nextLong()))
+                + ",\"site\":" + json(hosted ? "hosted" : "local")
+                + ",\"lang\":" + json(lang)
+                + ",\"project\":" + json(Files.isDirectory(projects.resolve(id)) ? id : "unknown")
+                + ",\"target\":" + json(target)
+                + ",\"selected\":" + (only == null ? 0 : only.size()) + ",\"outcome\":" + json(outcome)
+                + ",\"queue_ms\":" + queueMs + ",\"compile_ms\":" + compileMs + ",\"exec_ms\":" + execMs
+                + ",\"total_ms\":" + totalMs + ",\"tests_passed\":" + passed + ",\"tests_total\":" + total + "}";
+        System.out.println(line);
+        shipLog(end, line);
+        return new long[] {queueMs, compileMs, execMs};
+    }
+
+    static void observe(String lang, String phase, long millis) {
+        RUN_SECONDS.computeIfAbsent(lang + "|" + phase, k -> new Histogram()).observe(millis / 1000.0);
+    }
+
+    /** GET /metrics in the Prometheus text format. Protected by LAB_METRICS_TOKEN when that is set. */
+    static void metrics(HttpExchange ex) throws IOException {
+        if (!ex.getRequestURI().getPath().equals("/metrics") || !ex.getRequestMethod().equals("GET")) {
+            send(ex, 404, "text/plain", "not found");
+            return;
+        }
+        String token = System.getenv("LAB_METRICS_TOKEN");
+        if (token != null && !token.isBlank() && !metricsAuthorized(ex.getRequestHeaders().getFirst("Authorization"), token)) {
+            ex.getResponseHeaders().set("WWW-Authenticate", "Basic realm=\"metrics\"");
+            send(ex, 401, "text/plain", "unauthorized");
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("# HELP lab_runs_total Test runs by language and outcome.\n# TYPE lab_runs_total counter\n");
+        for (Map.Entry<String, java.util.concurrent.atomic.LongAdder> e : new java.util.TreeMap<>(RUN_COUNTS).entrySet()) {
+            String[] k = e.getKey().split("\\|");
+            sb.append("lab_runs_total{lang=\"").append(k[0]).append("\",outcome=\"").append(k[1]).append("\"} ")
+                    .append(e.getValue().sum()).append('\n');
+        }
+        sb.append("# HELP lab_run_seconds Time per run phase (queue, compile, exec, total).\n# TYPE lab_run_seconds histogram\n");
+        for (Map.Entry<String, Histogram> e : new java.util.TreeMap<>(RUN_SECONDS).entrySet()) {
+            String[] k = e.getKey().split("\\|");
+            String labels = "lang=\"" + k[0] + "\",phase=\"" + k[1] + "\"";
+            Histogram h = e.getValue();
+            synchronized (h) {
+                for (int i = 0; i < BUCKETS.length; i++) {
+                    sb.append("lab_run_seconds_bucket{").append(labels).append(",le=\"").append(BUCKETS[i]).append("\"} ")
+                            .append(h.buckets[i]).append('\n');
+                }
+                sb.append("lab_run_seconds_bucket{").append(labels).append(",le=\"+Inf\"} ").append(h.count).append('\n');
+                sb.append("lab_run_seconds_sum{").append(labels).append("} ").append(h.sum).append('\n');
+                sb.append("lab_run_seconds_count{").append(labels).append("} ").append(h.count).append('\n');
+            }
+        }
+        Runtime rt = Runtime.getRuntime();
+        gauge(sb, "lab_run_slots", "Test runs allowed at the same time.", PARALLEL_RUNS);
+        gauge(sb, "lab_runs_active", "Test runs executing now.", PARALLEL_RUNS - RUN_SLOTS.availablePermits());
+        gauge(sb, "lab_runs_waiting", "Test runs waiting for a slot.", RUN_SLOTS.getQueueLength());
+        gauge(sb, "lab_jvm_heap_used_bytes", "Server heap in use.", rt.totalMemory() - rt.freeMemory());
+        gauge(sb, "lab_jvm_heap_max_bytes", "Server heap limit.", rt.maxMemory());
+        gauge(sb, "lab_start_time_seconds", "Server start time (unix seconds).", STARTED_AT / 1000);
+        sb.append("# HELP lab_log_lines_dropped_total Run log lines that could not be shipped to Loki.\n")
+                .append("# TYPE lab_log_lines_dropped_total counter\nlab_log_lines_dropped_total ")
+                .append(LOGS_DROPPED.sum()).append('\n');
+        send(ex, 200, "text/plain; version=0.0.4; charset=utf-8", sb.toString());
+    }
+
+    static void gauge(StringBuilder sb, String name, String help, long value) {
+        sb.append("# HELP ").append(name).append(' ').append(help).append("\n# TYPE ").append(name).append(" gauge\n")
+                .append(name).append(' ').append(value).append('\n');
+    }
+
+    /** Accepts "Bearer <token>" or Basic auth with the token as the password (Grafana's scraper uses either). */
+    static boolean metricsAuthorized(String header, String token) {
+        if (header == null) return false;
+        String given = null;
+        if (header.startsWith("Bearer ")) {
+            given = header.substring(7).trim();
+        } else if (header.startsWith("Basic ")) {
+            try {
+                String pair = new String(java.util.Base64.getDecoder().decode(header.substring(6).trim()), StandardCharsets.UTF_8);
+                int colon = pair.indexOf(':');
+                if (colon >= 0) given = pair.substring(colon + 1);
+            } catch (IllegalArgumentException ignored) {
+                return false;
+            }
+        }
+        return given != null && java.security.MessageDigest.isEqual(
+                given.getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8));
+    }
+
+    static final java.util.concurrent.BlockingQueue<String[]> LOG_QUEUE = new java.util.concurrent.ArrayBlockingQueue<>(5000);
+    static final java.util.concurrent.atomic.LongAdder LOGS_DROPPED = new java.util.concurrent.atomic.LongAdder();
+    static volatile boolean shipLogs;
+
+    /**
+     * Optional: pushes run log lines to Grafana Loki every 10 s.
+     * LAB_LOKI_URL = https://<host>/loki/api/v1/push, LAB_LOKI_USER = numeric user id, LAB_LOKI_TOKEN = access token.
+     */
+    static void startLogShipper() {
+        String url = System.getenv("LAB_LOKI_URL");
+        if (url == null || url.isBlank()) return;
+        String user = System.getenv("LAB_LOKI_USER");
+        String token = System.getenv("LAB_LOKI_TOKEN");
+        String auth = token == null || token.isBlank() ? null
+                : user == null || user.isBlank() ? "Bearer " + token
+                : "Basic " + java.util.Base64.getEncoder().encodeToString((user + ":" + token).getBytes(StandardCharsets.UTF_8));
+        java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                .connectTimeout(java.time.Duration.ofSeconds(10)).build();
+        String stream = "{\"app\":\"build-lab\",\"site\":" + json(hosted ? "hosted" : "local") + "}";
+        java.util.concurrent.ScheduledExecutorService ses = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "log-shipper");
+            t.setDaemon(true);
+            return t;
+        });
+        shipLogs = true;
+        ses.scheduleWithFixedDelay(() -> {
+            List<String[]> batch = new ArrayList<>();
+            LOG_QUEUE.drainTo(batch, 1000);
+            if (batch.isEmpty()) return;
+            StringBuilder body = new StringBuilder("{\"streams\":[{\"stream\":").append(stream).append(",\"values\":[");
+            for (int i = 0; i < batch.size(); i++) {
+                body.append(i > 0 ? "," : "").append('[').append(json(batch.get(i)[0])).append(',')
+                        .append(json(batch.get(i)[1])).append(']');
+            }
+            body.append("]}]}");
+            try {
+                java.net.http.HttpRequest.Builder req = java.net.http.HttpRequest.newBuilder(URI.create(url))
+                        .timeout(java.time.Duration.ofSeconds(15))
+                        .header("Content-Type", "application/json")
+                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body.toString()));
+                if (auth != null) req.header("Authorization", auth);
+                int status = client.send(req.build(), java.net.http.HttpResponse.BodyHandlers.discarding()).statusCode();
+                if (status >= 300) {
+                    LOGS_DROPPED.add(batch.size());
+                    System.err.println("Log shipping failed: HTTP " + status);
+                }
+            } catch (Exception e) {
+                LOGS_DROPPED.add(batch.size());
+                System.err.println("Log shipping failed: " + e);
+            }
+        }, 10, 10, TimeUnit.SECONDS);
+        System.out.println("Shipping run logs to " + URI.create(url).getHost());
+    }
+
+    static void shipLog(long epochMillis, String line) {
+        if (!shipLogs) return;
+        if (!LOG_QUEUE.offer(new String[] {epochMillis + "000000", line})) LOGS_DROPPED.increment();
     }
 
     static String clientKey(HttpExchange ex) {
@@ -1162,6 +1423,8 @@ public class LabServer {
         pump.start();
         boolean done = p.waitFor(timeoutSeconds, TimeUnit.SECONDS);
         if (!done) {
+            RunCtx ctx = RUN_CTX.get();
+            if (ctx != null) ctx.timedOut = true;
             p.descendants().forEach(ProcessHandle::destroyForcibly);
             p.destroyForcibly();
         }
