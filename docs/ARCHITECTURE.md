@@ -90,6 +90,14 @@ flowchart LR
 **Why stateless hosting?** No database, no auth, no PII, no backups to manage. The free instance can restart at
 any moment without data loss. The trade-off (work lives in one browser) is mitigated by Export/Import backup.
 
+### Process roles (hosted mode)
+| `LAB_ROLE` | What runs | Used on |
+|---|---|---|
+| `all` (default) | one process serves the site and runs tests itself (`RUN_SLOTS` semaphore) | local, Codespaces, Render |
+| `api` + `worker` | API queues runs on a Redis stream and waits for the result; workers consume it with a consumer group and run each job in a fresh gVisor container | Oracle VM ([deploy/oracle](../deploy/oracle/README.md)) |
+
+The browser can't tell the two apart: same endpoints, same responses.
+
 ---
 
 ## 3. API

@@ -22,6 +22,7 @@ Phase 1 of the [scaling plan](SCALING_PLAN.md). Every test run produces:
    | `lab_runs_active`, `lab_runs_waiting`, `lab_run_slots` | gauge | |
    | `lab_jvm_heap_used_bytes`, `lab_jvm_heap_max_bytes`, `lab_start_time_seconds` | gauge | |
    | `lab_log_lines_dropped_total` | counter | |
+   | `lab_queue_depth`, `lab_workers_online` | gauge, API role only | runs in the Redis queue; workers seen in the last 30 s |
 
    Labels are deliberately low-cardinality: about 250 series in total, far under Grafana Cloud's free 10k.
    The project id is only in the logs.

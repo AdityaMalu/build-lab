@@ -75,7 +75,22 @@ Measure before optimising, so the "< 5 s" goal has a baseline.
 
 **Done when:** the dashboard shows the baseline p95 for Go and C++ on Render (expect about 25 s and 35 s).
 
-## Phase 2: Split API and workers, with a queue and gVisor (≈4–6 days)
+**Baseline measured on 2026-10-05** (Render free tier, Rate Limiter reference solution, three runs each):
+Go compile 24.4 s / 6.4 s / 5.4 s (its build cache helps once a package has been compiled), C++ compile
+31.4 s / 33.4 s / 31.4 s (no cache). Running the tests takes under 0.5 s in both, so **compilation is the
+whole cost**. For comparison, a 4-core arm64 CI runner compiled the same Go in 0.75 s and C++ in 3.1 s.
+
+## Phase 2: Split API and workers, with a queue and gVisor (≈4–6 days): **built**, see [deploy/oracle](../deploy/oracle/README.md)
+
+*As built, two simplifications versus the plan below:*
+- *The API holds the request open with `BLPOP` on the result, so the browser API didn't change; there's no
+  202 and polling.*
+- *Jobs whose worker died are dropped by a sweeper rather than retried, because by then the browser has
+  stopped waiting.*
+
+*The worker runs on the VM host under systemd, so no container gets the Docker socket. Also new: the seccomp
+filter now has an arm64 table, and Go/C++ fail closed on unknown architectures. Before this, they silently
+ran without the filter on arm64.*
 
 1. **Provision the VM:** Oracle A1 Ubuntu 24.04 arm64.
    - Install Docker, `runsc` (gVisor), Redis 7 (bound to localhost, password set) and the toolchains.
