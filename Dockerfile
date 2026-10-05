@@ -10,7 +10,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 ARG GO_VERSION=1.23.4
-RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+# amd64 (Render, most PCs) or arm64 (Oracle Ampere, Apple silicon): dpkg names match Go's
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" | tar -C /usr/local -xz
 ENV PATH=/usr/local/go/bin:$PATH
 
 # the unprivileged user that compiles and runs submitted code

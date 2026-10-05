@@ -48,8 +48,14 @@ jobs:
           done
 
   docker:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # x86-64 (Render) and arm64 (Oracle Ampere): each architecture has its own seccomp syscall table
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    name: docker (${{ matrix.runner }})
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - name: Build image

@@ -1,7 +1,10 @@
-// Package labsandbox locks the test binary down when LAB_SANDBOX=1 (Linux x86-64).
+//go:build linux && (amd64 || arm64)
+
+// Package labsandbox locks the test binary down when LAB_SANDBOX=1 (Linux x86-64 and arm64).
 //
 // The lab server imports it from inside the package under test, so it is initialised before that
 // package (and therefore before any submitted code) runs. Same policy as testkit/python/lab_sandbox.py.
+// The syscall numbers live in sys_linux_amd64.go and sys_linux_arm64.go.
 package labsandbox
 
 import (
@@ -13,42 +16,37 @@ import (
 )
 
 const (
-	auditArchX8664 = 0xC000003E
-	retKill        = 0x80000000
-	retAllow       = 0x7FFF0000
-	ldWAbs         = 0x20
-	jeq            = 0x15
-	jge            = 0x35
-	jset           = 0x45
-	ret            = 0x06
-	cloneThread    = 0x00010000
-	sysSeccomp     = 317
+	retKill     = 0x80000000
+	retAllow    = 0x7FFF0000
+	ldWAbs      = 0x20
+	jeq         = 0x15
+	jge         = 0x35
+	jset        = 0x45
+	ret         = 0x06
+	cloneThread = 0x00010000
+	sysClone3   = 435
 )
 
 func errno(e uint32) uint32 { return 0x00050000 | e }
-
-var denied = []uint32{
-	59, 322, 57, 58, 101, 310, 311, 312, 62, 200,
-	165, 166, 155, 161, 272, 308, 321, 298, 323, 425, 426, 427,
-	248, 249, 250, 246, 175, 313, 176, 169, 167, 168, 163, 179,
-	105, 106, 113, 114, 116, 117, 119,
-}
 
 func program() []syscall.SockFilter {
 	ins := func(code uint16, jt, jf uint8, k uint32) syscall.SockFilter {
 		return syscall.SockFilter{Code: code, Jt: jt, Jf: jf, K: k}
 	}
 	p := []syscall.SockFilter{
-		ins(ldWAbs, 0, 0, 4), ins(jeq, 1, 0, auditArchX8664), ins(ret, 0, 0, retKill),
-		ins(ldWAbs, 0, 0, 0), ins(jge, 0, 1, 0x40000000), ins(ret, 0, 0, retKill),
+		ins(ldWAbs, 0, 0, 4), ins(jeq, 1, 0, auditArch), ins(ret, 0, 0, retKill),
+		ins(ldWAbs, 0, 0, 0),
+	}
+	if refuseX32 {
+		p = append(p, ins(jge, 0, 1, 0x40000000), ins(ret, 0, 0, retKill))
 	}
 	for _, nr := range denied {
 		p = append(p, ins(jeq, 0, 1, nr), ins(ret, 0, 0, errno(1)))
 	}
-	p = append(p, ins(jeq, 0, 1, 435), ins(ret, 0, 0, errno(38)))
-	p = append(p, ins(jeq, 0, 4, 56), ins(ldWAbs, 0, 0, 16), ins(jset, 1, 0, cloneThread),
+	p = append(p, ins(jeq, 0, 1, sysClone3), ins(ret, 0, 0, errno(38)))
+	p = append(p, ins(jeq, 0, 4, sysClone), ins(ldWAbs, 0, 0, 16), ins(jset, 1, 0, cloneThread),
 		ins(ret, 0, 0, errno(1)), ins(ret, 0, 0, retAllow))
-	for _, nr := range []uint32{41, 53} {
+	for _, nr := range []uint32{sysSocket, sysSocketpair} {
 		p = append(p, ins(jeq, 0, 4, nr), ins(ldWAbs, 0, 0, 16), ins(jeq, 1, 0, 1),
 			ins(ret, 0, 0, errno(13)), ins(ret, 0, 0, retAllow))
 	}
