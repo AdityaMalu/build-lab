@@ -365,14 +365,17 @@ public class LabServer {
     static void cli(String id, String mode, String lang) throws Exception {
         String json = runTests(id(id), lang(lang), mode, null);
         boolean compileFailed = json.startsWith("{\"phase\":\"compile\"");
-        Matcher out = Pattern.compile("\"output\":\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(json);
+        // a JSON string body, written as an unrolled loop so long outputs don't overflow the regex stack
+        final String S = "[^\"\\\\]*+(?:\\\\.[^\"\\\\]*+)*+";
+        Matcher out = Pattern.compile("\"output\":\"(" + S + ")\"").matcher(json);
         String output = out.find() ? unjson(out.group(1)) : "";
         if (compileFailed) {
             System.out.println("COMPILATION FAILED\n" + output);
             System.exit(2);
         }
         Matcher row = Pattern.compile(
-                "\\{\"status\":\"(PASS|FAIL)\",\"suite\":\"(?:[^\"\\\\]|\\\\.)*\",\"method\":\"(?:[^\"\\\\]|\\\\.)*\",\"name\":\"((?:[^\"\\\\]|\\\\.)*)\",\"millis\":\"([0-9-]+)\",\"message\":\"((?:[^\"\\\\]|\\\\.)*)\"\\}")
+                "\\{\"status\":\"(PASS|FAIL)\",\"suite\":\"" + S + "\",\"method\":\"" + S + "\",\"name\":\"(" + S
+                        + ")\",\"millis\":\"([0-9-]+)\",\"message\":\"(" + S + ")\"\\}")
                 .matcher(json);
         int failed = 0, total = 0;
         while (row.find()) {

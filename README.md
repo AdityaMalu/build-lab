@@ -10,9 +10,9 @@ your code, results and progress are kept separately for each language. No build 
 | Language | Projects | Style |
 |---|---|---|
 | Java | all 18 | exceptions, `synchronized` / `java.util.concurrent`, our mini test kit |
-| Python | 3 so far (Rate Limiter, URL Shortener, Return Risk) | `ValueError`/`KeyError`, `threading`, standard library only |
-| Go | 3 so far | returned `error` values with `errors.Is`, goroutines + `sync`, standard `testing` |
-| C++ (C++20) | 3 so far | header-only, `std::invalid_argument`, `std::thread`/`std::mutex` |
+| Python | 7 so far (see the language picker) | `ValueError`/`KeyError`, `threading`, standard library only |
+| Go | 7 so far | returned `error` values with `errors.Is`, goroutines + `sync`, standard `testing` |
+| C++ (C++20) | 7 so far | header-only, `std::invalid_argument`, `std::thread`/`std::mutex` |
 
 More projects are being ported to Python, Go and C++ in batches.
 
