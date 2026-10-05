@@ -444,6 +444,8 @@ public class LabServer {
                     Files.writeString(f, e.getValue());
                 }
             }
+            // createTempDirectory makes the folder owner-only; the runner user must be able to enter it
+            openPermissions(tmp);
             return runSuite(id, lang, src, tmp.resolve("out"), true, only).json;
         } finally {
             RUN_SLOTS.release();
