@@ -1,0 +1,17 @@
+# Installed by setup.sh (REPO_DIR is filled in). Takes queued runs from Redis and executes each one
+# in a fresh gVisor container: docker run --runtime=runsc --network=none ... build-lab run-job /job
+[Unit]
+Description=Build Lab worker
+After=docker.service
+Requires=docker.service
+
+[Service]
+WorkingDirectory=REPO_DIR
+EnvironmentFile=REPO_DIR/deploy/oracle/.env
+Environment=LAB_ROLE=worker LAB_RUNNER=docker LAB_DOCKER_RUNTIME=runsc LAB_DOCKER_IMAGE=build-lab
+ExecStart=/usr/bin/java -Xmx128m -XX:+UseSerialGC -cp REPO_DIR/build/classes LabServer
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

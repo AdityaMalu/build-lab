@@ -62,6 +62,13 @@ public class LabServer {
      * (and Java's security manager / a seccomp filter installed by the harness).
      */
     static boolean hosted;
+
+    /**
+     * all (default): one process serves the site and runs tests (local mode, Render).
+     * api: serves the site and queues hosted runs in Redis; worker: takes runs from Redis and executes them,
+     * each in a fresh gVisor container. See docs/SCALING_PLAN.md (phase 2) and deploy/oracle.
+     */
+    static String role = "all";
     static final int PARALLEL_RUNS = Math.max(1, Integer.parseInt(System.getenv().getOrDefault("LAB_PARALLEL_RUNS", "2")));
     static final java.util.concurrent.Semaphore RUN_SLOTS = new java.util.concurrent.Semaphore(PARALLEL_RUNS, true);
     static final Map<String, java.util.ArrayDeque<Long>> RUNS_BY_CLIENT = new java.util.HashMap<>();
@@ -88,6 +95,16 @@ public class LabServer {
             rest.remove(r + 1);
             rest.remove(r);
         }
+        int ro = rest.indexOf("--role");
+        role = System.getenv().getOrDefault("LAB_ROLE", "all");
+        if (ro >= 0 && ro + 1 < rest.size()) {
+            role = rest.get(ro + 1);
+            rest.remove(ro + 1);
+            rest.remove(ro);
+        }
+        if (!role.matches("all|api|worker")) throw new IllegalArgumentException("--role must be all, api or worker");
+        boolean runJob = rest.size() >= 2 && rest.get(0).equals("run-job");
+        if (!role.equals("all") || runJob) hosted = true; // the fleet only exists for the public site
         args = rest.toArray(new String[0]);
         if (!Files.isDirectory(root.resolve("projects")) && Files.isDirectory(root.resolve("../projects"))) {
             root = root.resolve("..").normalize();
@@ -113,6 +130,15 @@ public class LabServer {
             cli(args[1], args.length >= 3 ? args[2] : "workspace", args.length >= 4 ? args[3] : "java");
             return;
         }
+        if (runJob) { // inside a per-run gVisor container started by a worker
+            runJobInContainer(Paths.get(args[1]));
+            return;
+        }
+        if (role.equals("worker")) {
+            startWorker();
+            return;
+        }
+        if (role.equals("api")) redisUri(); // fail fast without LAB_REDIS_URL
 
         int port = args.length > 0 ? Integer.parseInt(args[0])
                 : Integer.parseInt(System.getenv().getOrDefault("PORT", "8090"));
@@ -435,6 +461,7 @@ public class LabServer {
             }
         }
         checkRateLimit(clientKey(ex));
+        if (role.equals("api")) return submitJob(id, lang, mode, only, files); // a worker runs it
         long waitFrom = System.currentTimeMillis();
         if (!RUN_SLOTS.tryAcquire(30, TimeUnit.SECONDS)) throw new HttpError(503, "The server is busy, try again in a moment.");
         RunCtx ctx = RUN_CTX.get();
@@ -442,11 +469,21 @@ public class LabServer {
             ctx.startedAt = System.currentTimeMillis();
             ctx.queueMs = ctx.startedAt - waitFrom;
         }
+        try {
+            return runUploaded(id, lang, solution, files, only);
+        } finally {
+            RUN_SLOTS.release();
+        }
+    }
+
+    /** Runs already-validated files (or the reference solution) sandboxed in a temp folder that is deleted after. */
+    static String runUploaded(String id, String lang, boolean solution, Map<String, String> files, List<String[]> only)
+            throws Exception {
         Path tmp = Files.createTempDirectory(build, "run-");
         try {
             Path src;
             if (solution) {
-                src = lr.resolve("solution/src");
+                src = langRoot(id, lang).resolve("solution/src");
             } else {
                 src = tmp.resolve("src");
                 for (Map.Entry<String, String> e : files.entrySet()) {
@@ -460,7 +497,6 @@ public class LabServer {
             openPermissions(tmp);
             return runSuite(id, lang, src, tmp.resolve("out"), true, only).json;
         } finally {
-            RUN_SLOTS.release();
             try {
                 deleteTree(tmp);
             } catch (IOException ignored) {
@@ -1070,6 +1106,409 @@ public class LabServer {
         return sb.length() == 0 ? "compilation failed" : sb.toString();
     }
 
+    // ------------------------------------------------------------------ fleet: API + Redis queue + workers
+    //
+    // api role:    validate, rate limit, XADD the job to the lab:jobs stream, then BLPOP lab:result:<runId>.
+    // worker role: XREADGROUP jobs, run each one (LAB_RUNNER=docker: a fresh gVisor container per job;
+    //              inprocess: in this JVM, for testing), RPUSH the result, XACK + XDEL the job.
+    // Results are "<flat JSON meta>\n<suite JSON>". Workers heartbeat into the lab:workers sorted set.
+
+    static final String JOBS = "lab:jobs", GROUP = "workers", WORKERS = "lab:workers";
+    static final int JOB_WAIT_SECONDS = 400;   // longest compile (240 s) + run (90 s) + container start, with margin
+    static final int MAX_QUEUE = Integer.parseInt(System.getenv().getOrDefault("LAB_MAX_QUEUE", "20"));
+    static final java.util.concurrent.BlockingQueue<Redis> REDIS_POOL = new java.util.concurrent.LinkedBlockingQueue<>();
+
+    static URI redisUri() {
+        String url = System.getenv("LAB_REDIS_URL");
+        if (url == null || url.isBlank()) throw new IllegalStateException("LAB_REDIS_URL is required for --role " + role);
+        return URI.create(url);
+    }
+
+    /** A minimal Redis client (RESP2) over one TCP connection; not thread-safe, so connections are pooled. */
+    static final class Redis implements AutoCloseable {
+        final java.net.Socket socket;
+        final InputStream in;
+        final OutputStream out;
+
+        Redis(URI uri) throws IOException {
+            socket = new java.net.Socket();
+            socket.connect(new InetSocketAddress(uri.getHost(), uri.getPort() < 0 ? 6379 : uri.getPort()), 5000);
+            socket.setTcpNoDelay(true);
+            socket.setSoTimeout(30_000);
+            in = new java.io.BufferedInputStream(socket.getInputStream());
+            out = new java.io.BufferedOutputStream(socket.getOutputStream());
+            String info = uri.getRawUserInfo();
+            if (info != null && !info.isEmpty()) {
+                int c = info.indexOf(':');
+                String user = c >= 0 ? URLDecoder.decode(info.substring(0, c), StandardCharsets.UTF_8) : "";
+                String pass = URLDecoder.decode(c >= 0 ? info.substring(c + 1) : info, StandardCharsets.UTF_8);
+                if (user.isEmpty()) call("AUTH", pass);
+                else call("AUTH", user, pass);
+            }
+        }
+
+        Object call(String... args) throws IOException {
+            out.write(("*" + args.length + "\r\n").getBytes(StandardCharsets.US_ASCII));
+            for (String a : args) {
+                byte[] b = a.getBytes(StandardCharsets.UTF_8);
+                out.write(("$" + b.length + "\r\n").getBytes(StandardCharsets.US_ASCII));
+                out.write(b);
+                out.write('\r');
+                out.write('\n');
+            }
+            out.flush();
+            return read();
+        }
+
+        /** For blocking commands: waits up to {@code seconds} plus a margin for the reply. */
+        Object callBlocking(int seconds, String... args) throws IOException {
+            socket.setSoTimeout((seconds + 15) * 1000);
+            try {
+                return call(args);
+            } finally {
+                socket.setSoTimeout(30_000);
+            }
+        }
+
+        Object read() throws IOException {
+            int type = in.read();
+            if (type == -1) throw new java.io.EOFException("Redis closed the connection");
+            String line = readLine();
+            switch (type) {
+                case '+':
+                    return line;
+                case '-':
+                    throw new RedisError(line);
+                case ':':
+                    return Long.parseLong(line);
+                case '$': {
+                    int n = Integer.parseInt(line);
+                    if (n < 0) return null;
+                    byte[] b = in.readNBytes(n);
+                    in.readNBytes(2);
+                    return new String(b, StandardCharsets.UTF_8);
+                }
+                case '*': {
+                    int n = Integer.parseInt(line);
+                    if (n < 0) return null;
+                    List<Object> items = new ArrayList<>(n);
+                    for (int i = 0; i < n; i++) items.add(read());
+                    return items;
+                }
+                default:
+                    throw new IOException("unexpected Redis reply type " + (char) type);
+            }
+        }
+
+        String readLine() throws IOException {
+            StringBuilder sb = new StringBuilder();
+            int c;
+            while ((c = in.read()) != '\r') {
+                if (c == -1) throw new java.io.EOFException("Redis closed the connection");
+                sb.append((char) c);
+            }
+            in.read(); // \n
+            return sb.toString();
+        }
+
+        @Override
+        public void close() {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    static final class RedisError extends IOException {
+        RedisError(String message) {
+            super(message);
+        }
+    }
+
+    static Redis borrowRedis() throws IOException {
+        Redis r = REDIS_POOL.poll();
+        return r != null ? r : new Redis(redisUri());
+    }
+
+    /** Returns a healthy connection to the pool; pass broken=true after an I/O error to drop it. */
+    static void returnRedis(Redis r, boolean broken) {
+        if (broken || REDIS_POOL.size() >= 32) r.close();
+        else REDIS_POOL.offer(r);
+    }
+
+    static String flatJson(Map<String, String> map) {
+        StringBuilder sb = new StringBuilder("{");
+        for (Map.Entry<String, String> e : map.entrySet()) {
+            if (sb.length() > 1) sb.append(',');
+            sb.append(json(e.getKey())).append(':').append(json(e.getValue()));
+        }
+        return sb.append('}').toString();
+    }
+
+    static String testsParam(List<String[]> only) {
+        if (only == null) return "";
+        StringBuilder sb = new StringBuilder();
+        for (String[] t : only) sb.append(sb.length() > 0 ? "," : "").append(t[0]).append('#').append(t[1]);
+        return sb.toString();
+    }
+
+    /** api role: queue the run and wait for a worker's result. */
+    static String submitJob(String id, String lang, String mode, List<String[]> only, Map<String, String> files)
+            throws Exception {
+        Redis r = borrowRedis();
+        boolean broken = true;
+        try {
+            long now = System.currentTimeMillis();
+            long workers = (Long) r.call("ZCOUNT", WORKERS, String.valueOf(now - 30_000), "+inf");
+            if (workers == 0) throw new HttpError(503, "No test workers are online right now. Try again in a minute.");
+            long backlog = (Long) r.call("XLEN", JOBS);
+            if (backlog >= MAX_QUEUE) throw new HttpError(503, "The server is busy, try again in a moment.");
+            String runId = Long.toHexString(java.util.concurrent.ThreadLocalRandom.current().nextLong())
+                    + Long.toHexString(System.nanoTime());
+            r.call("XADD", JOBS, "MAXLEN", "~", "1000", "*", "run", runId, "project", id, "lang", lang, "mode", mode,
+                    "tests", testsParam(only), "files", flatJson(files), "at", String.valueOf(now));
+            Object reply = r.callBlocking(JOB_WAIT_SECONDS, "BLPOP", "lab:result:" + runId, String.valueOf(JOB_WAIT_SECONDS));
+            broken = false;
+            if (reply == null) throw new HttpError(504, "The test run did not finish in time. Try again.");
+            String value = (String) ((List<?>) reply).get(1);
+            int nl = value.indexOf('\n');
+            Map<String, String> meta = parseFlatJson(value.substring(0, nl));
+            if (!meta.getOrDefault("error", "").isEmpty()) {
+                throw new HttpError(500, "The test worker could not run this job. Please try again.");
+            }
+            RunCtx ctx = RUN_CTX.get();
+            if (ctx != null) {
+                ctx.queueMs = Long.parseLong(meta.get("queueMs"));
+                ctx.compileMs = Long.parseLong(meta.get("compileMs"));
+                ctx.execMs = Long.parseLong(meta.get("execMs"));
+                ctx.timedOut = Boolean.parseBoolean(meta.get("timedOut"));
+            }
+            return value.substring(nl + 1);
+        } finally {
+            returnRedis(r, broken);
+        }
+    }
+
+    /** api role: queue depth and live workers for /metrics (-1 when Redis is unreachable). */
+    static long[] fleetGauges() {
+        Redis r = null;
+        boolean broken = true;
+        try {
+            r = borrowRedis();
+            long backlog = (Long) r.call("XLEN", JOBS);
+            long workers = (Long) r.call("ZCOUNT", WORKERS, String.valueOf(System.currentTimeMillis() - 30_000), "+inf");
+            broken = false;
+            return new long[] {backlog, workers};
+        } catch (Exception e) {
+            return new long[] {-1, -1};
+        } finally {
+            if (r != null) returnRedis(r, broken);
+        }
+    }
+
+    // ----- worker
+
+    static final String RUNNER = System.getenv().getOrDefault("LAB_RUNNER", "docker");
+    static final String DOCKER_IMAGE = System.getenv().getOrDefault("LAB_DOCKER_IMAGE", "build-lab");
+    static final String DOCKER_RUNTIME = System.getenv().getOrDefault("LAB_DOCKER_RUNTIME", "runsc");
+    static final Path JOB_ROOT = Paths.get(System.getenv().getOrDefault("LAB_JOB_DIR", "/var/lib/buildlab/jobs"));
+    static final java.util.concurrent.atomic.LongAdder JOBS_LOST = new java.util.concurrent.atomic.LongAdder();
+
+    static void startWorker() throws Exception {
+        if (!RUNNER.matches("docker|inprocess")) throw new IllegalStateException("LAB_RUNNER must be docker or inprocess");
+        String host = java.net.InetAddress.getLocalHost().getHostName();
+        String name = host + "-" + ProcessHandle.current().pid();
+        int slots = Integer.parseInt(System.getenv().getOrDefault("LAB_WORKER_SLOTS", String.valueOf(PARALLEL_RUNS)));
+        try (Redis r = new Redis(redisUri())) {
+            try {
+                r.call("XGROUP", "CREATE", JOBS, GROUP, "$", "MKSTREAM");
+            } catch (RedisError e) {
+                if (!e.getMessage().startsWith("BUSYGROUP")) throw e; // the group already exists
+            }
+        }
+        if (RUNNER.equals("docker")) Files.createDirectories(JOB_ROOT);
+        for (int i = 0; i < slots; i++) {
+            String consumer = name + "-" + i;
+            Thread t = new Thread(() -> consume(consumer), "worker-" + i);
+            t.start();
+        }
+        Thread housekeeping = new Thread(() -> housekeeping(name), "worker-housekeeping");
+        housekeeping.setDaemon(true);
+        housekeeping.start();
+        System.out.println("Build Lab worker " + name + ": " + slots + " slots, runner " + RUNNER
+                + (RUNNER.equals("docker") ? " (image " + DOCKER_IMAGE + ", runtime " + DOCKER_RUNTIME + ")" : ""));
+    }
+
+    /** Heartbeat every 10 s; every minute, drop jobs nobody finished (their worker died). */
+    static void housekeeping(String name) {
+        Redis r = null;
+        long lastSweep = 0;
+        while (true) {
+            try {
+                if (r == null) r = new Redis(redisUri());
+                long now = System.currentTimeMillis();
+                r.call("ZADD", WORKERS, String.valueOf(now), name);
+                r.call("ZREMRANGEBYSCORE", WORKERS, "-inf", String.valueOf(now - 120_000));
+                if (now - lastSweep > 60_000) {
+                    lastSweep = now;
+                    Object pending = r.call("XPENDING", JOBS, GROUP, "IDLE",
+                            String.valueOf((JOB_WAIT_SECONDS + 60) * 1000L), "-", "+", "20");
+                    for (Object p : (List<?>) pending) {
+                        String entryId = (String) ((List<?>) p).get(0);
+                        r.call("XACK", JOBS, GROUP, entryId);
+                        r.call("XDEL", JOBS, entryId);
+                        JOBS_LOST.increment();
+                        System.err.println("Dropped job " + entryId + ": its worker stopped before finishing it");
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Worker housekeeping: " + e);
+                if (r != null) r.close();
+                r = null;
+            }
+            try {
+                Thread.sleep(10_000);
+            } catch (InterruptedException e) {
+                return;
+            }
+        }
+    }
+
+    static void consume(String consumer) {
+        Redis r = null;
+        while (true) {
+            try {
+                if (r == null) r = new Redis(redisUri());
+                Object reply = r.callBlocking(5, "XREADGROUP", "GROUP", GROUP, consumer, "COUNT", "1", "BLOCK", "5000",
+                        "STREAMS", JOBS, ">");
+                if (reply == null) continue;
+                List<?> entry = (List<?>) ((List<?>) ((List<?>) ((List<?>) reply).get(0)).get(1)).get(0);
+                String entryId = (String) entry.get(0);
+                List<?> kv = (List<?>) entry.get(1);
+                Map<String, String> job = new LinkedHashMap<>();
+                for (int i = 0; i + 1 < kv.size(); i += 2) job.put((String) kv.get(i), (String) kv.get(i + 1));
+                String result = executeJob(job);
+                String key = "lab:result:" + job.get("run");
+                r.call("RPUSH", key, result);
+                r.call("EXPIRE", key, "120");
+                r.call("XACK", JOBS, GROUP, entryId);
+                r.call("XDEL", JOBS, entryId);
+            } catch (Exception e) {
+                System.err.println("Worker " + consumer + ": " + e);
+                if (r != null) r.close();
+                r = null;
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException ie) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /** Runs one queued job and returns "<meta>\n<suite JSON>". Never throws: failures go into meta.error. */
+    static String executeJob(Map<String, String> job) {
+        long picked = System.currentTimeMillis();
+        long queueMs = Math.max(0, picked - Long.parseLong(job.getOrDefault("at", String.valueOf(picked))));
+        Map<String, String> meta = new LinkedHashMap<>();
+        String suite = "";
+        try {
+            if (RUNNER.equals("docker")) {
+                String[] out = runInContainer(job);
+                meta.putAll(parseFlatJson(out[0]));
+                suite = out[1];
+            } else {
+                RunCtx ctx = new RunCtx();
+                RUN_CTX.set(ctx);
+                try {
+                    suite = runJobRequest(job);
+                } finally {
+                    RUN_CTX.remove();
+                }
+                long[] phases = ctx.phases(System.currentTimeMillis());
+                meta.put("compileMs", String.valueOf(phases[0]));
+                meta.put("execMs", String.valueOf(phases[1]));
+                meta.put("timedOut", String.valueOf(ctx.timedOut));
+            }
+        } catch (Exception e) {
+            System.err.println("Job " + job.get("run") + " failed: " + e);
+            meta.put("error", String.valueOf(e));
+        }
+        meta.put("queueMs", String.valueOf(queueMs));
+        meta.putIfAbsent("compileMs", "0");
+        meta.putIfAbsent("execMs", "0");
+        meta.putIfAbsent("timedOut", "false");
+        return flatJson(meta) + "\n" + suite;
+    }
+
+    /** Validates a job's fields again (never trust the queue) and runs it in this process. */
+    static String runJobRequest(Map<String, String> job) throws Exception {
+        String id = id(job.get("project"));
+        String lang = lang(job.get("lang"));
+        String mode = job.getOrDefault("mode", "workspace");
+        String tests = job.getOrDefault("tests", "");
+        List<String[]> only = selection(id, lang, tests.isEmpty() ? null : tests);
+        boolean solution = mode.equals("solution");
+        Map<String, String> files = solution ? Map.of() : parseFlatJson(job.getOrDefault("files", "{}"));
+        if (!solution) {
+            if (files.isEmpty() || files.size() > 30) throw new IllegalArgumentException("send 1..30 files");
+            for (Map.Entry<String, String> e : files.entrySet()) {
+                if (!validUploadName(lang, e.getKey())) throw new IllegalArgumentException("bad file name " + e.getKey());
+                if (lang.equals("go")) checkGoSource(e.getKey(), e.getValue());
+            }
+        }
+        return runUploaded(id, lang, solution, files, only);
+    }
+
+    /** docker runner: the job runs in a fresh, network-less gVisor container that is removed afterwards. */
+    static String[] runInContainer(Map<String, String> job) throws Exception {
+        String runId = job.get("run");
+        if (runId == null || !runId.matches("[0-9a-f]{1,40}")) throw new IllegalArgumentException("bad run id");
+        Path dir = JOB_ROOT.resolve(runId);
+        Files.createDirectories(dir);
+        try {
+            Files.writeString(dir.resolve("request.json"), flatJson(job));
+            String container = "lab-run-" + runId;
+            List<String> cmd = List.of("docker", "run", "--rm", "--name", container,
+                    "--runtime=" + DOCKER_RUNTIME, "--network=none",
+                    "--memory=1g", "--memory-swap=1g", "--cpus=1", "--pids-limit=512",
+                    "--security-opt=no-new-privileges",
+                    "-v", dir + ":/job", DOCKER_IMAGE, "run-job", "/job");
+            Proc p = exec(cmd, JOB_WAIT_SECONDS - 30, null, null);
+            if (p.timedOut()) exec(List.of("docker", "rm", "-f", container), 30, null, null);
+            Path result = dir.resolve("result.json");
+            if (!Files.exists(result)) {
+                String tail = p.output().length() > 2000 ? p.output().substring(p.output().length() - 2000) : p.output();
+                throw new IOException("container produced no result (exit " + p.code() + "): " + tail.strip());
+            }
+            String text = Files.readString(result);
+            int nl = text.indexOf('\n');
+            return new String[] {text.substring(0, nl), text.substring(nl + 1)};
+        } finally {
+            deleteTree(dir);
+        }
+    }
+
+    /** Entry point inside the container: /job/request.json in, /job/result.json out. */
+    static void runJobInContainer(Path dir) throws Exception {
+        Map<String, String> job = parseFlatJson(Files.readString(dir.resolve("request.json")));
+        RunCtx ctx = new RunCtx();
+        RUN_CTX.set(ctx);
+        Map<String, String> meta = new LinkedHashMap<>();
+        String suite = "";
+        try {
+            suite = runJobRequest(job);
+        } catch (Exception e) {
+            meta.put("error", String.valueOf(e));
+        }
+        long[] phases = ctx.phases(System.currentTimeMillis());
+        meta.put("compileMs", String.valueOf(phases[0]));
+        meta.put("execMs", String.valueOf(phases[1]));
+        meta.put("timedOut", String.valueOf(ctx.timedOut));
+        Files.writeString(dir.resolve("result.json"), flatJson(meta) + "\n" + suite);
+    }
+
     // ------------------------------------------------------------------ telemetry
     //
     // One JSON log line per test run (stdout, plus Grafana Loki when LAB_LOKI_URL is set) and Prometheus metrics
@@ -1083,6 +1522,14 @@ public class LabServer {
         long queueMs;
         long compileDoneAt;
         boolean timedOut;
+        long compileMs = -1, execMs = -1; // set when another process (a worker) measured the phases
+
+        /** {compileMs, execMs} for a run that ended at {@code end}. */
+        long[] phases(long end) {
+            if (compileMs >= 0) return new long[] {compileMs, Math.max(0, execMs)};
+            long compile = (compileDoneAt > 0 ? compileDoneAt : end) - startedAt;
+            return new long[] {compile, compileDoneAt > 0 ? end - compileDoneAt : 0};
+        }
     }
 
     static final ThreadLocal<RunCtx> RUN_CTX = new ThreadLocal<>();
@@ -1151,15 +1598,16 @@ public class LabServer {
             default -> false;
         };
         long queueMs = ctx.queueMs;
-        long compileMs = ran ? (ctx.compileDoneAt > 0 ? ctx.compileDoneAt : end) - ctx.startedAt : 0;
-        long execMs = ran && ctx.compileDoneAt > 0 ? end - ctx.compileDoneAt : 0;
+        long[] phases = ctx.phases(end);
+        long compileMs = ran ? phases[0] : 0;
+        long execMs = ran ? phases[1] : 0;
         long totalMs = end - ctx.createdAt;
 
         RUN_COUNTS.computeIfAbsent(lang + "|" + outcome, k -> new java.util.concurrent.atomic.LongAdder()).increment();
         if (ran) {
             observe(lang, "queue", queueMs);
             observe(lang, "compile", compileMs);
-            if (ctx.compileDoneAt > 0) observe(lang, "exec", execMs);
+            if (execMs > 0) observe(lang, "exec", execMs);
             observe(lang, "total", totalMs);
         }
 
@@ -1219,6 +1667,11 @@ public class LabServer {
         gauge(sb, "lab_run_slots", "Test runs allowed at the same time.", PARALLEL_RUNS);
         gauge(sb, "lab_runs_active", "Test runs executing now.", PARALLEL_RUNS - RUN_SLOTS.availablePermits());
         gauge(sb, "lab_runs_waiting", "Test runs waiting for a slot.", RUN_SLOTS.getQueueLength());
+        if (role.equals("api")) {
+            long[] fleet = fleetGauges();
+            gauge(sb, "lab_queue_depth", "Runs queued or running in Redis (-1: Redis unreachable).", fleet[0]);
+            gauge(sb, "lab_workers_online", "Workers with a heartbeat in the last 30 s (-1: Redis unreachable).", fleet[1]);
+        }
         gauge(sb, "lab_jvm_heap_used_bytes", "Server heap in use.", rt.totalMemory() - rt.freeMemory());
         gauge(sb, "lab_jvm_heap_max_bytes", "Server heap limit.", rt.maxMemory());
         gauge(sb, "lab_start_time_seconds", "Server start time (unix seconds).", STARTED_AT / 1000);

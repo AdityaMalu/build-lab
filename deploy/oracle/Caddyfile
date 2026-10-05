@@ -1,0 +1,7 @@
+# HTTPS with automatic Let's Encrypt certificates. LAB_DOMAIN must point at this VM's public IP;
+# without a domain of your own, <ip-with-dashes>.sslip.io works (e.g. 129-146-1-2.sslip.io).
+# Caddy replaces any X-Forwarded-For sent by the client, so the per-IP rate limit sees the real address.
+{$LAB_DOMAIN} {
+	encode gzip
+	reverse_proxy api:8080
+}

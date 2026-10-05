@@ -36,4 +36,9 @@ ENV LAB_MODE=hosted \
     LAB_GOCACHE=/opt/gocache
 EXPOSE 8080
 
-CMD ["java", "-Xmx150m", "-XX:+UseSerialGC", "server/LabServer.java"]
+# compiled once here instead of on every start (each queued run starts a JVM in its own container)
+RUN javac -d /app/classes server/LabServer.java
+
+# no arguments: the website (Render, or the api role with LAB_ROLE=api)
+# "run-job /job": one queued run, inside a fresh gVisor container started by a worker
+ENTRYPOINT ["java", "-Xmx150m", "-XX:+UseSerialGC", "-cp", "/app/classes", "LabServer"]
