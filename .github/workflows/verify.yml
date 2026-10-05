@@ -1,4 +1,4 @@
-﻿name: verify
+name: verify
 
 on:
   push:
@@ -7,44 +7,68 @@ on:
 jobs:
   solutions:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: false
 
-      - name: Every reference solution passes its tests
+      - name: Every reference solution passes its tests (all languages)
         run: |
           set -e
           for id in $(jq -r '.[].id' projects/catalog.json); do
-            echo "::group::$id (solution)"
-            java server/LabServer.java test "$id" solution
-            echo "::endgroup::"
+            for lang in java python go cpp; do
+              [ -d "projects/$id/$lang/starter/src" ] || continue
+              echo "::group::$id ($lang solution)"
+              java server/LabServer.java test "$id" solution "$lang"
+              echo "::endgroup::"
+            done
           done
 
       - name: Every starter compiles (tests are expected to fail)
         run: |
           for id in $(jq -r '.[].id' projects/catalog.json); do
-            out=$(java server/LabServer.java test "$id" starter || true)
-            if echo "$out" | grep -q "COMPILATION FAILED"; then
-              echo "$out"; echo "::error::starter for $id does not compile"; exit 1
-            fi
-            echo "$id: $(echo "$out" | tail -n 1)"
+            for lang in java python go cpp; do
+              [ -d "projects/$id/$lang/starter/src" ] || continue
+              out=$(java server/LabServer.java test "$id" starter "$lang" || true)
+              if echo "$out" | grep -q "COMPILATION FAILED"; then
+                echo "$out"; echo "::error::$lang starter for $id does not compile"; exit 1
+              fi
+              echo "$id ($lang): $(echo "$out" | tail -n 1)"
+            done
           done
 
   docker:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
-      - name: Build image and smoke-test hosted mode
+      - name: Build image
+        run: docker build -t build-lab .
+      - name: Start hosted mode
         run: |
-          docker build -t build-lab .
           docker run -d --name lab -p 8080:8080 build-lab
-          for i in $(seq 1 30); do curl -sf localhost:8080/api/config && break; sleep 2; done
-          curl -sf localhost:8080/api/config | grep -q hosted
-          curl -sf -X POST "localhost:8080/api/run/rate-limiter?mode=solution" | tee result.json
-          grep -q '"ok":true' result.json
-          docker logs lab
+          for i in $(seq 1 60); do curl -sf localhost:8080/api/config && break; sleep 2; done
+          curl -sf localhost:8080/api/config | tee config.json
+          for lang in java python go cpp; do grep -q "\"$lang\"" config.json || { echo "::error::$lang missing"; exit 1; }; done
+      - name: Solutions pass inside the sandbox
+        run: |
+          for lang in java python go cpp; do
+            curl -sf -X POST "localhost:8080/api/run/rate-limiter?mode=solution&lang=$lang" > "result-$lang.json"
+            echo "$lang: $(jq -c '{ok, passed, total}' "result-$lang.json")"
+            jq -e '.ok == true' "result-$lang.json" > /dev/null || { cat "result-$lang.json"; exit 1; }
+          done
+      - name: Sandbox blocks forbidden operations
+        run: bash .github/scripts/sandbox-probes.sh http://localhost:8080
+      - name: Server log
+        if: always()
+        run: docker logs lab

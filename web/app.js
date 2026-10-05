@@ -8,10 +8,15 @@
   const toastEl = document.getElementById("toast");
 
   const DIFF_ORDER = { Easy: 0, Medium: 1, Hard: 2 };
+  const LANG_NAMES = { java: "Java", python: "Python", go: "Go", cpp: "C++" };
+  const LANG_SHORT = { java: "Java", python: "Py", go: "Go", cpp: "C++" };
   const state = {
     hosted: false, // hosted site: code + progress live in this browser, not on the server
     projects: [],
-    progress: {},
+    progress: {}, // "lang:projectId" -> status
+    projectLangs: {}, // projectId -> languages that project exists in
+    serverLangs: ["java"], // languages whose toolchain the server has
+    lang: "java",
     filters: loadPrefs(),
     detail: null, // { project, files, current, buffers, dirty:Set, cm }
   };
@@ -44,13 +49,47 @@
   function savePrefs() {
     lsSet("buildlab.filters", state.filters);
   }
-  const codeKey = (id, file) => `buildlab.code.${id}:${file}`;
+  const codeKey = (id, file) => `buildlab.code.${state.lang}.${id}:${file}`;
+  const pkey = (id) => `${state.lang}:${id}`;
+  const langQ = () => `lang=${state.lang}`;
+  const hasLang = (id) => (state.projectLangs[id] || ["java"]).includes(state.lang);
   function setStatus(id, status) {
-    if (status === "todo") delete state.progress[id];
-    else state.progress[id] = status;
+    if (status === "todo") delete state.progress[pkey(id)];
+    else state.progress[pkey(id)] = status;
     if (state.hosted) lsSet("buildlab.progress", state.progress);
-    else api("/api/status/" + id, { method: "POST", body: status }).catch(() => {});
+    else api(`/api/status/${id}?${langQ()}`, { method: "POST", body: status }).catch(() => {});
     updateProgress();
+  }
+
+  /** Browser storage written before languages existed belongs to Java. */
+  function migrateStorage() {
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i));
+      for (const k of keys) {
+        let m = k.match(/^buildlab\.code\.([a-z0-9-]+):(.+)$/);
+        if (m) {
+          localStorage.setItem(`buildlab.code.java.${m[1]}:${m[2]}`, localStorage.getItem(k));
+          localStorage.removeItem(k);
+          continue;
+        }
+        m = k.match(/^buildlab\.results\.([a-z0-9-]+)$/);
+        if (m && !Object.keys(LANG_NAMES).includes(m[1])) {
+          localStorage.setItem(`buildlab.results.java.${m[1]}`, localStorage.getItem(k));
+          localStorage.removeItem(k);
+        }
+      }
+      const progress = lsGet("buildlab.progress", {}) || {};
+      let changed = false;
+      for (const k of Object.keys(progress)) {
+        if (!k.includes(":")) {
+          progress["java:" + k] = progress[k];
+          delete progress[k];
+          changed = true;
+        }
+      }
+      if (changed) lsSet("buildlab.progress", progress);
+    } catch { /* storage unavailable */ }
   }
   function esc(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -69,15 +108,37 @@
     return body;
   }
   function statusOf(id) {
-    return state.progress[id] || "todo";
+    return state.progress[pkey(id)] || "todo";
   }
   function renderMarkdown(md) {
     if (window.marked) return window.marked.parse(md);
     return "<pre>" + esc(md) + "</pre>"; // CDN unavailable: still readable
   }
   function updateProgress() {
-    const solved = state.projects.filter((p) => statusOf(p.id) === "solved").length;
-    progressPill.textContent = `${solved} / ${state.projects.length} solved`;
+    const available = state.projects.filter((p) => hasLang(p.id));
+    const solved = available.filter((p) => statusOf(p.id) === "solved").length;
+    progressPill.textContent = `${solved} / ${available.length} solved in ${LANG_NAMES[state.lang]}`;
+  }
+
+  function setupLanguagePicker() {
+    const sel = document.getElementById("langSel");
+    sel.innerHTML = Object.entries(LANG_NAMES).map(([k, v]) => {
+      const count = state.projects.filter((p) => (state.projectLangs[p.id] || ["java"]).includes(k)).length;
+      const missing = !state.serverLangs.includes(k);
+      return `<option value="${k}"${missing ? " disabled" : ""}>${v} · ${count} projects${missing ? " (not installed)" : ""}</option>`;
+    }).join("");
+    sel.value = state.lang;
+    sel.addEventListener("change", () => {
+      if (hasUnsaved() && !confirm("You have unsaved changes. Switch language anyway?")) {
+        sel.value = state.lang;
+        return;
+      }
+      if (state.detail) state.detail.dirty.clear();
+      state.lang = sel.value;
+      lsSet("buildlab.lang", state.lang);
+      updateProgress();
+      route();
+    });
   }
   const ICONS = {
     build: '<svg viewBox="0 0 24 24" width="20" height="20"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>',
@@ -86,11 +147,17 @@
 
   // ------------------------------------------------------------ data
   async function loadCatalog() {
-    const config = await api("/api/config").catch(() => ({ mode: "local" }));
+    const config = await api("/api/config").catch(() => ({ mode: "local", langs: ["java"] }));
     state.hosted = config.mode === "hosted";
+    state.serverLangs = config.langs || ["java"];
+    if (state.hosted) migrateStorage();
     const data = await api("/api/projects");
     state.projects = data.projects;
+    state.projectLangs = data.languages || {};
     state.progress = state.hosted ? lsGet("buildlab.progress", {}) || {} : data.progress || {};
+    const saved = lsGet("buildlab.lang", "java");
+    state.lang = state.serverLangs.includes(saved) ? saved : "java";
+    setupLanguagePicker();
     updateProgress();
   }
 
@@ -167,7 +234,7 @@
       drawCards();
     });
 
-    const next = state.projects.find((p) => statusOf(p.id) !== "solved");
+    const next = state.projects.find((p) => hasLang(p.id) && statusOf(p.id) !== "solved");
     const startBtn = inner.querySelector("#startBtn");
     if (next) {
       startBtn.href = "#/p/" + next.id;
@@ -208,9 +275,14 @@
     grid.innerHTML = list.map((p) => {
       const st = statusOf(p.id);
       const extra = p.tags.length > 3 ? `<span class="chip">+${p.tags.length - 3}</span>` : "";
-      const badge = st === "solved" ? '<span class="status-badge solved">✓ Solved</span>'
+      const available = hasLang(p.id);
+      const badge = !available ? `<span class="status-badge muted">Not in ${LANG_NAMES[state.lang]} yet</span>`
+        : st === "solved" ? '<span class="status-badge solved">✓ Solved</span>'
         : st === "attempted" ? '<span class="status-badge attempted">● Attempted</span>' : "";
-      return `<a class="card" href="#/p/${p.id}">
+      const langs = (state.projectLangs[p.id] || ["java"])
+        .map((l) => `<span class="lang-dot${l === state.lang ? " current" : ""}">${LANG_SHORT[l]}</span>`).join("");
+      return `<a class="card${available ? "" : " unavailable"}" href="#/p/${p.id}">
+        <div class="card-langs">${langs}</div>
         <div class="card-top">
           <span class="card-icon ${p.kind}">${ICONS[p.kind]}</span>
           <div><h3>${esc(p.title)}</h3><div class="kind">${p.kind === "debug" ? "Debug & fix" : "Build"}</div></div>
@@ -226,12 +298,14 @@
   async function renderDetail(id) {
     const project = state.projects.find((p) => p.id === id);
     if (!project) return renderList();
-    crumbs.innerHTML = `<a href="#/">Projects</a><span class="sep">/</span><strong>${esc(project.title)}</strong>`;
+    crumbs.innerHTML = `<a href="#/">Projects</a><span class="sep">/</span><strong>${esc(project.title)}</strong>`
+      + `<span class="sep">·</span>${LANG_NAMES[state.lang]}`;
+    if (!hasLang(id)) return renderUnavailable(project);
     app.className = "";
     app.innerHTML = "";
     app.appendChild(document.getElementById("tpl-detail").content.cloneNode(true));
 
-    const info = await api("/api/project/" + id);
+    const info = await api(`/api/project/${id}?${langQ()}`);
     const d = {
       project, info,
       current: null,
@@ -262,7 +336,7 @@
     document.getElementById("resetBtn").addEventListener("click", async () => {
       if (!confirm("Restore the starter code? Your changes to this project will be lost.")) return;
       if (state.hosted) for (const f of info.workspace) lsRemove(codeKey(id, f));
-      else await api("/api/reset/" + id, { method: "POST" });
+      else await api(`/api/reset/${id}?${langQ()}`, { method: "POST" });
       d.buffers = {};
       d.dirty.clear();
       for (const f of info.workspace) d.buffers[f] = await loadFile(d, f);
@@ -273,7 +347,7 @@
       toast("Starter code restored");
     });
 
-    d.tests = await api("/api/tests/" + id);
+    d.tests = await api(`/api/tests/${id}?${langQ()}`);
     d.results = lsGet(resultsKey(id), {}) || {};
     d.selected = new Set();
     d.running = null;
@@ -305,9 +379,26 @@
     if (state.hosted) {
       const saved = lsGet(codeKey(d.project.id, f), null);
       if (typeof saved === "string") return saved;
-      return api(`/api/file?project=${d.project.id}&area=starter&path=${encodeURIComponent(f)}`);
+      return api(`/api/file?project=${d.project.id}&${langQ()}&area=starter&path=${encodeURIComponent(f)}`);
     }
-    return api(`/api/file?project=${d.project.id}&area=workspace&path=${encodeURIComponent(f)}`);
+    return api(`/api/file?project=${d.project.id}&${langQ()}&area=workspace&path=${encodeURIComponent(f)}`);
+  }
+
+  /** The project exists, just not in the selected language yet. */
+  function renderUnavailable(project) {
+    state.detail = null;
+    app.className = "list-page";
+    const langs = state.projectLangs[project.id] || ["java"];
+    app.innerHTML = `<div class="list-inner"><div class="reveal">
+      <h2>${esc(project.title)} isn't available in ${LANG_NAMES[state.lang]} yet</h2>
+      <p>It's available in: ${langs.map((l) => LANG_NAMES[l]).join(", ")}.</p>
+      ${langs.map((l) => `<button class="btn ghost" data-lang="${l}">Open in ${LANG_NAMES[l]}</button>`).join(" ")}
+      <p><a href="#/">← Back to all projects</a></p></div></div>`;
+    app.querySelectorAll("button[data-lang]").forEach((b) => b.addEventListener("click", () => {
+      const sel = document.getElementById("langSel");
+      sel.value = b.dataset.lang;
+      sel.dispatchEvent(new Event("change"));
+    }));
   }
 
   function setupLeftTabs(d) {
@@ -346,7 +437,7 @@
   }
 
   async function appendCode(container, id, area, file) {
-    const text = await api(`/api/file?project=${id}&area=${area}&path=${encodeURIComponent(file)}`);
+    const text = await api(`/api/file?project=${id}&${langQ()}&area=${area}&path=${encodeURIComponent(file)}`);
     const wrap = document.createElement("div");
     wrap.className = "code-view";
     wrap.dataset.file = file;
@@ -372,7 +463,7 @@
 
   // ------------------------------------------------------------ per-test results
   const testKey = (t) => `${t.suite}#${t.method}`;
-  const resultsKey = (id) => `buildlab.results.${id}`;
+  const resultsKey = (id) => `buildlab.results.${state.lang}.${id}`;
 
   /** Cheap fingerprint of the editable code, so results know which version they were run against. */
   function codeHash(d) {
@@ -496,11 +587,12 @@
     const ta = document.getElementById("editor");
     if (window.CodeMirror) {
       d.cm = window.CodeMirror.fromTextArea(ta, {
-        mode: "text/x-java",
+        mode: { java: "text/x-java", python: "python", go: "go", cpp: "text/x-c++src" }[state.lang],
         theme: matchMedia("(prefers-color-scheme: light)").matches ? "default" : "material-darker",
         lineNumbers: true,
         indentUnit: 4,
         tabSize: 4,
+        indentWithTabs: state.lang === "go", // gofmt style
         matchBrackets: true,
         autoCloseBrackets: true,
         extraKeys: {
@@ -587,7 +679,8 @@
     }
     const files = [...d.dirty];
     for (const f of files) {
-      await api(`/api/file?project=${d.project.id}&path=${encodeURIComponent(f)}`, { method: "PUT", body: d.buffers[f] });
+      await api(`/api/file?project=${d.project.id}&${langQ()}&path=${encodeURIComponent(f)}`,
+        { method: "PUT", body: d.buffers[f] });
       d.dirty.delete(f);
     }
     drawFileTabs(d);
@@ -623,7 +716,7 @@
         body = JSON.stringify(files);
       }
       const qs = partial ? "&tests=" + encodeURIComponent(wanted.join(",")) : "";
-      const r = await api(`/api/run/${d.project.id}?mode=workspace${qs}`, {
+      const r = await api(`/api/run/${d.project.id}?${langQ()}&mode=workspace${qs}`, {
         method: "POST",
         body,
         headers: body ? { "Content-Type": "application/json" } : undefined,
@@ -699,7 +792,7 @@
         }
         body = JSON.stringify(files);
       }
-      const r = await api(`/api/run/${d.project.id}?mode=${mode}`, {
+      const r = await api(`/api/run/${d.project.id}?${langQ()}&mode=${mode}`, {
         method: "POST",
         body,
         headers: body ? { "Content-Type": "application/json" } : undefined,

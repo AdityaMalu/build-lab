@@ -1,12 +1,19 @@
 {
   "name": "Build Lab",
   "image": "mcr.microsoft.com/devcontainers/java:1-21",
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.23" }
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y g++",
   "forwardPorts": [8090],
   "portsAttributes": {
     "8090": { "label": "Build Lab", "onAutoForward": "openBrowser" }
   },
   "postAttachCommand": "java server/LabServer.java 8090",
   "customizations": {
-    "vscode": { "extensions": ["vscjava.vscode-java-pack"] }
+    "vscode": {
+      "extensions": ["vscjava.vscode-java-pack", "ms-python.python", "golang.go", "ms-vscode.cpptools"]
+    }
   }
 }

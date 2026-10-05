@@ -18,6 +18,10 @@
     Build Lab
   </a>
   <nav class="crumbs" id="crumbs"></nav>
+  <label class="lang-picker" title="Language you solve projects in">
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M8 6l-6 6 6 6M16 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <select id="langSel" aria-label="Programming language"><option value="java">Java</option></select>
+  </label>
   <div class="progress-pill" id="progressPill" title="Projects solved">0 / 0 solved</div>
 </header>
 
@@ -26,9 +30,9 @@
 <template id="tpl-list">
   <section class="hero">
     <div class="hero-text">
-      <p class="eyebrow">Java practice projects</p>
+      <p class="eyebrow">Backend practice projects · Java · Python · Go · C++</p>
       <h1>Build it. Break it. Fix it.</h1>
-      <p class="lead">Eighteen realistic backend tasks in plain Java: concurrency, API design, persistence and
+      <p class="lead">Eighteen realistic backend tasks in Java, Python, Go or C++: concurrency, API design, persistence and
         debugging production code. Edit in the browser or your IDE, then run the test suite.</p>
       <div class="hero-actions">
         <a class="btn primary" id="startBtn" href="#/">Start next project</a>
@@ -120,6 +124,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/go/go.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
 <script src="app.js"></script>
