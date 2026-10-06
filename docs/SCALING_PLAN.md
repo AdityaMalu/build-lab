@@ -1,4 +1,4 @@
-# Build Lab: Scaling Plan (free tier only)
+# MachineCodingLab: Scaling Plan (free tier only)
 
 Goal: implement the five "next steps" from [ARCHITECTURE.md](ARCHITECTURE.md) without paying, and be clear
 about where a free tier stops.

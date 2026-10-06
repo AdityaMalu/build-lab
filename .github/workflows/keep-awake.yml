@@ -15,4 +15,4 @@ jobs:
     timeout-minutes: 3
     steps:
       - name: Ping
-        run: curl -sS --max-time 120 --retry 2 -o /dev/null -w "%{http_code} in %{time_total}s\n" https://build-lab.onrender.com/api/config
+        run: curl -sS --max-time 120 --retry 2 -o /dev/null -w "%{http_code} in %{time_total}s\n" https://machine-coding-lab.onrender.com/api/config

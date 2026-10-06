@@ -1,6 +1,6 @@
-# Build Lab: backend practice projects in Java, Python, Go and C++
+# MachineCodingLab: backend practice projects in Java, Python, Go and C++
 
-[![verify](https://github.com/AdityaMalu/build-lab/actions/workflows/verify.yml/badge.svg)](https://github.com/AdityaMalu/build-lab/actions/workflows/verify.yml)
+[![verify](https://github.com/AdityaMalu/machine-coding-lab/actions/workflows/verify.yml/badge.svg)](https://github.com/AdityaMalu/machine-coding-lab/actions/workflows/verify.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 18 hands-on projects (10 build, 8 debug) with specs, starter code, test suites and reference solutions,
@@ -18,12 +18,12 @@ More projects are being ported to Python, Go and C++ in batches.
 
 ## Three ways to use it
 
-**1. In your browser, nothing to install:** **https://build-lab.onrender.com**
+**1. In your browser, nothing to install:** **https://machine-coding-lab.onrender.com**
 Your code and progress are saved in your browser (use *Export a backup* on the home page to keep them safe).
 
 **2. Your own cloud machine (GitHub Codespaces):**
 
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AdityaMalu/build-lab)
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AdityaMalu/machine-coding-lab)
 
 The lab opens automatically on port 8090. Uses your own free Codespaces quota.
 Codespaces are deleted after ~30 days without use, so to keep your work long term **fork this repo first**,
@@ -32,8 +32,8 @@ open the Codespace from your fork, and commit your `workspace/` there (remove `w
 **3. On your machine:** needs JDK 17+ (runs the server). For the other languages: Python 3.10+, Go 1.22+,
 and g++ 11+ (C++20). The language picker only offers what's installed.
 ```
-git clone https://github.com/AdityaMalu/build-lab.git
-cd build-lab
+git clone https://github.com/AdityaMalu/machine-coding-lab.git
+cd machine-coding-lab
 .\lab.ps1                      # Windows, opens http://localhost:8090
 java server/LabServer.java     # macOS / Linux / any OS
 ```

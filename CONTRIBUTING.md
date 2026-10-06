@@ -1,4 +1,4 @@
-# Contributing to Build Lab
+# Contributing to MachineCodingLab
 
 Thanks for helping! New projects, ports to other languages, better tests, bug fixes and UI improvements are all
 welcome.

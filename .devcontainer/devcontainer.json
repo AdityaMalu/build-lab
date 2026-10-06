@@ -1,5 +1,5 @@
 {
-  "name": "Build Lab",
+  "name": "MachineCodingLab",
   "image": "mcr.microsoft.com/devcontainers/java:1-21",
   "features": {
     "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
@@ -8,7 +8,7 @@
   "postCreateCommand": "sudo apt-get update && sudo apt-get install -y g++",
   "forwardPorts": [8090],
   "portsAttributes": {
-    "8090": { "label": "Build Lab", "onAutoForward": "openBrowser" }
+    "8090": { "label": "MachineCodingLab", "onAutoForward": "openBrowser" }
   },
   "postAttachCommand": "java server/LabServer.java 8090",
   "customizations": {

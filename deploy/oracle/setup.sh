@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# One-time setup of a fresh Ubuntu 24.04 VM (x86-64 or arm64) for Build Lab: Docker, gVisor, Java,
+# One-time setup of a fresh Ubuntu 24.04 VM (x86-64 or arm64) for MachineCodingLab: Docker, gVisor, Java,
 # the build-lab image, the worker service and the Caddy + API + Redis stack. Safe to re-run.
 #
-#   git clone https://github.com/AdityaMalu/build-lab.git && cd build-lab
+#   git clone https://github.com/AdityaMalu/machine-coding-lab.git && cd machine-coding-lab
 #   sudo LAB_DOMAIN=129-146-1-2.sslip.io bash deploy/oracle/setup.sh
 #
 # Secrets are generated into deploy/oracle/.env (mode 600, git-ignored) and never leave the VM.

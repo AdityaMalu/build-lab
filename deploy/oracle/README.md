@@ -1,4 +1,4 @@
-# Deploying Build Lab on an Oracle Cloud Always Free VM
+# Deploying MachineCodingLab on an Oracle Cloud Always Free VM
 
 Phase 2 of the [scaling plan](../../docs/SCALING_PLAN.md): one VM runs everything.
 
@@ -29,7 +29,7 @@ Each run is isolated by:
 ## 2. Install (on the VM)
 ```bash
 ssh ubuntu@<public-ip>
-git clone https://github.com/AdityaMalu/build-lab.git && cd build-lab
+git clone https://github.com/AdityaMalu/machine-coding-lab.git && cd machine-coding-lab
 sudo LAB_DOMAIN=<public-ip-with-dashes>.sslip.io bash deploy/oracle/setup.sh
 ```
 - The domain can be your own, with an A record pointing at the IP. Without one, `sslip.io` resolves
@@ -41,13 +41,13 @@ sudo LAB_DOMAIN=<public-ip-with-dashes>.sslip.io bash deploy/oracle/setup.sh
 Check it:
 ```bash
 curl https://<domain>/api/config
-journalctl -u buildlab-worker -n 20       # "Build Lab worker ...: 2 slots, runner docker (... runtime runsc)"
+journalctl -u buildlab-worker -n 20       # "MachineCodingLab worker ...: 2 slots, runner docker (... runtime runsc)"
 curl -H "Authorization: Bearer $(sudo grep LAB_METRICS_TOKEN deploy/oracle/.env | cut -d= -f2)" https://<domain>/metrics | grep -E "workers_online|queue_depth"
 ```
 
 ## 3. Update
 ```bash
-cd build-lab && sudo bash deploy/oracle/update.sh
+cd machine-coding-lab && sudo bash deploy/oracle/update.sh
 ```
 
 ## Settings (`deploy/oracle/.env`)

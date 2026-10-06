@@ -1,4 +1,4 @@
-# Build Lab, hosted mode (multi-user website) with Java, Python, Go and C++.
+# MachineCodingLab, hosted mode (multi-user website) with Java, Python, Go and C++.
 #
 # The server runs as root only so it can start each test run as the unprivileged "runner" user
 # (setpriv) with resource limits (prlimit). Submitted code additionally runs under Java's security

@@ -1,4 +1,4 @@
-// Build Lab front end. Talks to server/LabServer.java.
+// MachineCodingLab front end. Talks to server/LabServer.java.
 (() => {
   "use strict";
 
@@ -183,7 +183,7 @@
     const blob = new Blob([JSON.stringify(dump, null, 1)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "build-lab-backup.json";
+    a.download = "machinecodinglab-backup.json";
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
@@ -194,7 +194,7 @@
     input.onchange = async () => {
       try {
         const dump = JSON.parse(await input.files[0].text());
-        if (!dump || dump.version !== 1) throw new Error("not a Build Lab backup");
+        if (!dump || dump.version !== 1) throw new Error("not a MachineCodingLab backup");
         for (const [k, v] of Object.entries(dump.code || {})) if (k.startsWith("buildlab.code.")) lsSet(k, v);
         state.progress = dump.progress || {};
         lsSet("buildlab.progress", state.progress);
@@ -247,7 +247,7 @@
     const next = state.projects.find((p) => hasLang(p.id) && statusOf(p.id) !== "solved");
     const startBtn = inner.querySelector("#startBtn");
     if (next) {
-      startBtn.href = "#/p/" + next.id;
+      startBtn.href = "/p/" + next.id;
       startBtn.textContent = statusOf(next.id) === "attempted" ? `Continue: ${next.title}` : `Start: ${next.title}`;
     } else {
       startBtn.textContent = "All solved, nice work";
@@ -291,7 +291,7 @@
         : st === "attempted" ? '<span class="status-badge attempted">● Attempted</span>' : "";
       const langs = (state.projectLangs[p.id] || ["java"])
         .map((l) => `<span class="lang-dot${l === state.lang ? " current" : ""}">${LANG_SHORT[l]}</span>`).join("");
-      return `<a class="card${available ? "" : " unavailable"}" href="#/p/${p.id}">
+      return `<a class="card${available ? "" : " unavailable"}" href="/p/${p.id}">
         <div class="card-langs">${langs}</div>
         <div class="card-top">
           <span class="card-icon ${p.kind}">${ICONS[p.kind]}</span>
@@ -308,7 +308,7 @@
   async function renderDetail(id) {
     const project = state.projects.find((p) => p.id === id);
     if (!project) return renderList();
-    crumbs.innerHTML = `<a href="#/">Projects</a><span class="sep">/</span><strong>${esc(project.title)}</strong>`
+    crumbs.innerHTML = `<a href="/">Projects</a><span class="sep">/</span><strong>${esc(project.title)}</strong>`
       + `<span class="sep">·</span>${LANG_NAMES[state.lang]}`;
     if (!hasLang(id)) return renderUnavailable(project);
     app.className = "";
@@ -402,7 +402,7 @@
       <h2>${esc(project.title)} isn't available in ${LANG_NAMES[state.lang]} yet</h2>
       <p>It's available in: ${langs.map((l) => LANG_NAMES[l]).join(", ")}.</p>
       ${langs.map((l) => `<button class="btn ghost" data-lang="${l}">Open in ${LANG_NAMES[l]}</button>`).join(" ")}
-      <p><a href="#/">← Back to all projects</a></p></div></div>`;
+      <p><a href="/">← Back to all projects</a></p></div></div>`;
     app.querySelectorAll("button[data-lang]").forEach((b) => b.addEventListener("click", () => {
       const sel = document.getElementById("langSel");
       sel.value = b.dataset.lang;
@@ -1043,25 +1043,49 @@
     }
   });
 
-  let lastHash = location.hash;
+  // Real URLs: "/" and "/p/<id>" (the server renders them too, for search engines and link previews).
+  // Links written as "#/p/<id>" by older versions still work.
+  if (/^#\/(p\/[a-z0-9-]+)?/.test(location.hash)) {
+    history.replaceState(null, "", location.hash.slice(1) || "/");
+  }
+  const SITE = "MachineCodingLab";
+  let lastPath = location.pathname;
   async function route() {
-    if (hasUnsaved() && !location.hash.startsWith("#/p/" + state.detail.project.id)) {
+    if (hasUnsaved() && location.pathname !== "/p/" + state.detail.project.id) {
       if (!confirm("You have unsaved changes. Leave anyway?")) {
-        history.replaceState(null, "", lastHash);
+        history.pushState(null, "", lastPath);
         return;
       }
     }
-    lastHash = location.hash;
-    const m = location.hash.match(/^#\/p\/([a-z0-9-]+)/);
+    lastPath = location.pathname;
+    const m = location.pathname.match(/^\/p\/([a-z0-9-]+)\/?$/);
     try {
-      if (m) await renderDetail(m[1]);
-      else renderList();
+      if (m) {
+        await renderDetail(m[1]);
+        const p = state.projects.find((x) => x.id === m[1]);
+        document.title = p ? `${p.title}: machine coding practice | ${SITE}` : SITE;
+      } else {
+        renderList();
+        document.title = `${SITE} | Machine coding & low-level design practice`;
+      }
     } catch (e) {
       app.innerHTML = `<div class="list-inner"><p class="summary-fail">Could not load: ${esc(e.message)}</p>
         <p class="muted">Is the lab server running? Start it with <code>java server/LabServer.java</code>.</p></div>`;
     }
   }
-  window.addEventListener("hashchange", route);
+  /** Client-side navigation for in-app links; everything else (new tab, other sites, downloads) as usual. */
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest("a[href^='/']");
+    if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const href = a.getAttribute("href");
+    if (a.target || a.hasAttribute("download") || !/^\/(p\/[a-z0-9-]+\/?)?$/.test(href)) return;
+    e.preventDefault();
+    if (href === location.pathname) return;
+    history.pushState(null, "", href);
+    window.scrollTo(0, 0);
+    route();
+  });
+  window.addEventListener("popstate", route);
 
   loadCatalog().then(route).catch((e) => {
     app.innerHTML = `<div class="list-inner"><p class="summary-fail">Could not reach the lab server: ${esc(e.message)}</p>

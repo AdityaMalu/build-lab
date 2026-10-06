@@ -3,7 +3,7 @@
     { "name": "DS_PROMETHEUS", "label": "Prometheus", "type": "datasource", "pluginId": "prometheus", "pluginName": "Prometheus" },
     { "name": "DS_LOKI", "label": "Loki", "type": "datasource", "pluginId": "loki", "pluginName": "Loki" }
   ],
-  "title": "Build Lab",
+  "title": "MachineCodingLab",
   "uid": "build-lab",
   "description": "Test runs: volume, outcomes, p95 time per phase, queue wait, server memory, and the run log.",
   "editable": true,

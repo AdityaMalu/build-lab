@@ -1,5 +1,5 @@
 <#
-  Build Lab launcher.
+  MachineCodingLab launcher.
 
     .\lab.ps1                         start the web UI (http://localhost:8090)
     .\lab.ps1 -Port 9000              start on another port

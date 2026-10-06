@@ -1,4 +1,4 @@
-# Build Lab on one VM (Oracle Always Free Ampere A1, or any Ubuntu box with Docker):
+# MachineCodingLab on one VM (Oracle Always Free Ampere A1, or any Ubuntu box with Docker):
 #
 #   browser -> caddy (HTTPS) -> api -> redis <- worker (systemd on the host) -> one gVisor container per run
 #

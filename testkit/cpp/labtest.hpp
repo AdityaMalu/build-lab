@@ -1,4 +1,4 @@
-// Minimal test kit for Build Lab's C++ projects (header-only, standard library only).
+// Minimal test kit for MachineCodingLab's C++ projects (header-only, standard library only).
 //
 //   LAB_TEST(SuiteName, methodName, "readable name") { ...; ASSERT_EQ(expected, actual, "message"); }
 //

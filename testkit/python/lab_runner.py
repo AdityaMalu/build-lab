@@ -1,4 +1,4 @@
-"""Runs Build Lab Python tests.
+"""Runs MachineCodingLab Python tests.
 
 usage: python -I -B lab_runner.py --src DIR --tests DIR [--sandbox] [Suite#method ...]
 

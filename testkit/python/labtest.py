@@ -1,4 +1,4 @@
-"""Minimal test kit for Build Lab's Python projects (standard library only).
+"""Minimal test kit for MachineCodingLab's Python projects (standard library only).
 
 Tests are methods of classes whose names end in ``Test``, marked with ``@test("readable name")``.
 A fresh instance of the class is created for every test.

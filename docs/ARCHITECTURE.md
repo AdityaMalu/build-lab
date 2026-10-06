@@ -1,11 +1,11 @@
-# Build Lab: Architecture (HLD + LLD)
+# MachineCodingLab: Architecture (HLD + LLD)
 
-Build Lab is a self-hosted practice platform for backend engineering. Users pick a project
+MachineCodingLab is a self-hosted practice platform for backend engineering. Users pick a project
 (18 so far: "build" projects and "debug" projects with planted bugs), read a spec, write code in the browser,
 and run a hidden-but-readable test suite against it in **Java, Python, Go or C++**.
 
-- Live: https://build-lab.onrender.com
-- Repo: https://github.com/AdityaMalu/build-lab (MIT)
+- Live: https://machine-coding-lab.onrender.com
+- Repo: https://github.com/AdityaMalu/machine-coding-lab (MIT)
 
 ---
 

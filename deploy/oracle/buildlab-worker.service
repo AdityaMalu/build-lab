@@ -1,7 +1,7 @@
 # Installed by setup.sh (REPO_DIR is filled in). Takes queued runs from Redis and executes each one
 # in a fresh gVisor container: docker run --runtime=runsc --network=none ... build-lab run-job /job
 [Unit]
-Description=Build Lab worker
+Description=MachineCodingLab worker
 After=docker.service
 Requires=docker.service
 

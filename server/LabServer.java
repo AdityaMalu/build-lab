@@ -30,7 +30,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * Build Lab server. Pure JDK, no dependencies.
+ * MachineCodingLab server. Pure JDK, no dependencies.
  *
  * Run from the practice-lab folder:   java server/LabServer.java [--hosted] [--root dir] [port]
  * CLI:                                java server/LabServer.java test <project> [workspace|solution|starter] [java|python|go|cpp]
@@ -157,7 +157,7 @@ public class LabServer {
         kitDir(); // compile the Java test kit once up front
 
         String url = "http://localhost:" + port + "/";
-        System.out.println("Build Lab (" + (hosted ? "hosted" : "local") + " mode) running at " + url + "  (Ctrl+C to stop)");
+        System.out.println("MachineCodingLab (" + (hosted ? "hosted" : "local") + " mode) running at " + url + "  (Ctrl+C to stop)");
         System.out.println("Languages available here: " + availableLangs());
         if (hosted && !sandboxReady()) {
             System.out.println("WARNING: hosted mode without the OS sandbox (needs Linux, root, prlimit and setpriv).");
@@ -233,7 +233,24 @@ public class LabServer {
 
     static void staticFile(HttpExchange ex) throws IOException {
         String path = ex.getRequestURI().getPath();
-        if (path.equals("/")) path = "/index.html";
+        if (path.equals("/") || path.equals("/index.html")) {
+            servePage(ex, null);
+            return;
+        }
+        Matcher page = Pattern.compile("^/p/([a-z0-9-]{1,64})/?$").matcher(path);
+        if (page.matches()) {
+            servePage(ex, page.group(1));
+            return;
+        }
+        if (path.equals("/robots.txt")) {
+            send(ex, 200, "text/plain; charset=utf-8", "User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /metrics\n"
+                    + "Sitemap: " + publicBase(ex) + "/sitemap.xml\n");
+            return;
+        }
+        if (path.equals("/sitemap.xml")) {
+            send(ex, 200, "application/xml; charset=utf-8", sitemap(publicBase(ex)));
+            return;
+        }
         Path web = root.resolve("web");
         Path file = web.resolve(path.substring(1)).normalize();
         if (!file.startsWith(web) || !Files.isRegularFile(file)) {
@@ -247,6 +264,185 @@ public class LabServer {
                 : name.endsWith(".svg") ? "image/svg+xml"
                 : "application/octet-stream";
         send(ex, 200, type, Files.readAllBytes(file));
+    }
+
+    // ------------------------------------------------------------------ pages for people and search engines
+    //
+    // The UI is a single-page app, but "/" and "/p/<id>" are real URLs. The server fills in each page's
+    // title, description, canonical link, social-preview tags and structured data, plus a readable version
+    // of the content (project list, or the full spec), which the app replaces once it starts. So crawlers
+    // and link previews see real content without running JavaScript.
+
+    static final String SITE = "MachineCodingLab";
+    static final String TAGLINE = "Machine coding & low-level design practice in Java, Python, Go and C++";
+    static final String SITE_DESCRIPTION = "Free, open-source machine coding round and low-level design (LLD) practice: "
+            + "build and debug real backend services such as a rate limiter, LRU cache and job queue, with test "
+            + "suites you run in the browser in Java, Python, Go or C++.";
+
+    record ProjectMeta(String id, String title, String difficulty, String kind, String summary, List<String> tags) {}
+
+    static List<ProjectMeta> catalogMeta() throws IOException {
+        String catalog = Files.readString(projects.resolve("catalog.json"));
+        List<ProjectMeta> out = new ArrayList<>();
+        Matcher obj = Pattern.compile("\\{[^{}]*\\}").matcher(catalog);
+        while (obj.find()) {
+            String o = obj.group();
+            List<String> tags = new ArrayList<>();
+            Matcher t = Pattern.compile("\"tags\"\\s*:\\s*\\[([^\\]]*)\\]").matcher(o);
+            if (t.find()) {
+                Matcher s = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(t.group(1));
+                while (s.find()) tags.add(unjson(s.group(1)));
+            }
+            out.add(new ProjectMeta(field(o, "id"), field(o, "title"), field(o, "difficulty"), field(o, "kind"),
+                    field(o, "summary"), tags));
+        }
+        return out;
+    }
+
+    static String field(String obj, String name) {
+        Matcher m = Pattern.compile("\"" + name + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").matcher(obj);
+        return m.find() ? unjson(m.group(1)) : "";
+    }
+
+    /** The site's public origin: LAB_PUBLIC_URL, or what the request came in on. */
+    static String publicBase(HttpExchange ex) {
+        String env = System.getenv("LAB_PUBLIC_URL");
+        if (env != null && !env.isBlank()) return env.replaceAll("/+$", "");
+        String host = ex.getRequestHeaders().getFirst("Host");
+        String proto = ex.getRequestHeaders().getFirst("X-Forwarded-Proto");
+        if (host == null || !host.matches("[A-Za-z0-9.:\\[\\]-]{1,255}")) host = "localhost";
+        return (proto != null && proto.equals("https") ? "https" : "http") + "://" + host;
+    }
+
+    static String sitemap(String base) throws IOException {
+        StringBuilder sb = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                + "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n");
+        sb.append("  <url><loc>").append(base).append("/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n");
+        for (ProjectMeta p : catalogMeta()) {
+            sb.append("  <url><loc>").append(base).append("/p/").append(p.id())
+                    .append("</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>\n");
+        }
+        return sb.append("</urlset>\n").toString();
+    }
+
+    static String html(String s) {
+        return s == null ? "" : s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    }
+
+    /** index.html with this page's head tags and readable content filled in. */
+    static void servePage(HttpExchange ex, String id) throws IOException {
+        String base = publicBase(ex);
+        List<ProjectMeta> all = catalogMeta();
+        ProjectMeta p = id == null ? null : all.stream().filter(x -> x.id().equals(id)).findFirst().orElse(null);
+        int status = id != null && p == null ? 404 : 200;
+        String title, description, url, body, jsonLd;
+        if (p == null) {
+            title = SITE + " | " + TAGLINE;
+            description = SITE_DESCRIPTION;
+            url = base + "/";
+            StringBuilder list = new StringBuilder();
+            StringBuilder items = new StringBuilder();
+            int i = 0;
+            for (ProjectMeta x : all) {
+                list.append("<li><a href=\"/p/").append(x.id()).append("\">").append(html(x.title())).append("</a> (")
+                        .append(html(x.difficulty())).append(", ").append(x.kind().equals("debug") ? "debug" : "build")
+                        .append("): ").append(html(x.summary())).append("</li>\n");
+                items.append(i++ > 0 ? "," : "").append("{\"@type\":\"ListItem\",\"position\":").append(i)
+                        .append(",\"url\":").append(json(base + "/p/" + x.id())).append(",\"name\":").append(json(x.title())).append('}');
+            }
+            body = (status == 404 ? "<p>That project doesn't exist. Here are all of them.</p>" : "")
+                    + "<h1>" + SITE + ": " + html(TAGLINE) + "</h1>\n<p>" + html(SITE_DESCRIPTION) + "</p>\n"
+                    + "<h2>Projects</h2>\n<ul>\n" + list + "</ul>\n";
+            jsonLd = "{\"@context\":\"https://schema.org\",\"@graph\":[{\"@type\":\"WebSite\",\"name\":" + json(SITE)
+                    + ",\"url\":" + json(url) + ",\"description\":" + json(SITE_DESCRIPTION) + "},{\"@type\":\"ItemList\","
+                    + "\"name\":\"Machine coding practice projects\",\"itemListElement\":[" + items + "]}]}";
+        } else {
+            String kind = p.kind().equals("debug") ? "debugging exercise" : "build exercise";
+            title = p.title() + ": machine coding practice | " + SITE;
+            description = p.summary() + " " + p.difficulty() + " " + kind + " in " + String.join(", ", langNames(p.id())) + ".";
+            url = base + "/p/" + p.id();
+            String readme = Files.readString(projects.resolve(p.id()).resolve("README.md"));
+            body = "<p><a href=\"/\">All projects</a></p>\n<h1>" + html(p.title()) + ": machine coding practice</h1>\n"
+                    + "<p>" + html(p.summary()) + "</p>\n<p>" + html(p.difficulty()) + " " + kind + ". Languages: "
+                    + html(String.join(", ", langNames(p.id()))) + ". Topics: " + html(String.join(", ", p.tags())) + ".</p>\n"
+                    + "<article>\n" + markdownToHtml(readme) + "</article>\n";
+            jsonLd = "{\"@context\":\"https://schema.org\",\"@type\":\"LearningResource\",\"name\":" + json(p.title())
+                    + ",\"description\":" + json(p.summary()) + ",\"url\":" + json(url)
+                    + ",\"learningResourceType\":\"Coding exercise\",\"educationalLevel\":" + json(p.difficulty())
+                    + ",\"teaches\":" + jsonList(p.tags()) + ",\"programmingLanguage\":" + jsonList(langNames(p.id()))
+                    + ",\"isAccessibleForFree\":true,\"inLanguage\":\"en\",\"provider\":{\"@type\":\"Organization\",\"name\":"
+                    + json(SITE) + ",\"url\":" + json(base + "/") + "}}";
+        }
+        String head = "<title>" + html(title) + "</title>\n"
+                + "<meta name=\"description\" content=\"" + html(description) + "\">\n"
+                + "<link rel=\"canonical\" href=\"" + html(url) + "\">\n"
+                + (status == 404 ? "<meta name=\"robots\" content=\"noindex\">\n" : "")
+                + "<meta property=\"og:type\" content=\"website\">\n"
+                + "<meta property=\"og:site_name\" content=\"" + SITE + "\">\n"
+                + "<meta property=\"og:title\" content=\"" + html(title) + "\">\n"
+                + "<meta property=\"og:description\" content=\"" + html(description) + "\">\n"
+                + "<meta property=\"og:url\" content=\"" + html(url) + "\">\n"
+                + "<meta name=\"twitter:card\" content=\"summary\">\n"
+                + "<script type=\"application/ld+json\">" + jsonLd.replace("</", "<\\/") + "</script>";
+        String page = Files.readString(root.resolve("web/index.html"))
+                .replaceFirst("<title>[^<]*</title>", Matcher.quoteReplacement(head))
+                .replace("<!--PRERENDER-->", "<div class=\"prerender list-inner\">\n" + body + "</div>");
+        send(ex, status, "text/html; charset=utf-8", page);
+    }
+
+    static List<String> langNames(String id) {
+        Map<String, String> names = Map.of("java", "Java", "python", "Python", "go", "Go", "cpp", "C++");
+        return langsOf(id).stream().map(names::get).toList();
+    }
+
+    /** Just enough Markdown for our specs (headings, lists, code, tables as text, emphasis); input is escaped. */
+    static String markdownToHtml(String md) {
+        StringBuilder out = new StringBuilder();
+        boolean code = false, list = false;
+        StringBuilder para = new StringBuilder();
+        for (String raw : md.split("\\R")) {
+            if (raw.startsWith("```")) {
+                if (para.length() > 0) { out.append("<p>").append(inlineMd(para.toString())).append("</p>\n"); para.setLength(0); }
+                if (list) { out.append("</ul>\n"); list = false; }
+                out.append(code ? "</code></pre>\n" : "<pre><code>");
+                code = !code;
+                continue;
+            }
+            if (code) {
+                out.append(html(raw)).append('\n');
+                continue;
+            }
+            String line = raw.strip();
+            Matcher h = Pattern.compile("^(#{1,4})\\s+(.*)$").matcher(line);
+            boolean item = line.matches("^([-*]|\\d+\\.)\\s+.*");
+            if (line.isEmpty() || h.matches() || item || line.startsWith("|")) {
+                if (para.length() > 0) { out.append("<p>").append(inlineMd(para.toString())).append("</p>\n"); para.setLength(0); }
+            }
+            if (!item && list && !line.isEmpty()) { out.append("</ul>\n"); list = false; }
+            if (h.matches()) {
+                int level = Math.min(6, h.group(1).length() + 1); // the page's own h1 comes first
+                out.append("<h").append(level).append('>').append(inlineMd(h.group(2))).append("</h").append(level).append(">\n");
+            } else if (item) {
+                if (!list) { out.append("<ul>\n"); list = true; }
+                out.append("<li>").append(inlineMd(line.replaceFirst("^([-*]|\\d+\\.)\\s+", ""))).append("</li>\n");
+            } else if (line.startsWith("|")) {
+                if (!line.matches("^\\|[\\s|:-]+\\|?$")) {
+                    out.append("<p>").append(inlineMd(line.replaceAll("^\\||\\|$", "").replace("|", " · ").strip())).append("</p>\n");
+                }
+            } else if (!line.isEmpty()) {
+                para.append(para.length() > 0 ? " " : "").append(line);
+            }
+        }
+        if (para.length() > 0) out.append("<p>").append(inlineMd(para.toString())).append("</p>\n");
+        if (list) out.append("</ul>\n");
+        if (code) out.append("</code></pre>\n");
+        return out.toString();
+    }
+
+    static String inlineMd(String s) {
+        return html(s).replaceAll("`([^`]+)`", "<code>$1</code>")
+                .replaceAll("\\*\\*([^*]+)\\*\\*", "<strong>$1</strong>")
+                .replaceAll("\\[([^\\]]+)\\]\\([^)]*\\)", "$1");
     }
 
     // ------------------------------------------------------------------ languages
@@ -1444,7 +1640,7 @@ public class LabServer {
         Thread housekeeping = new Thread(() -> housekeeping(name), "worker-housekeeping");
         housekeeping.setDaemon(true);
         housekeeping.start();
-        System.out.println("Build Lab worker " + name + ": " + slots + " slots, runner " + RUNNER
+        System.out.println("MachineCodingLab worker " + name + ": " + slots + " slots, runner " + RUNNER
                 + (RUNNER.equals("docker") ? " (image " + DOCKER_IMAGE + ", runtime " + DOCKER_RUNTIME + ")" : ""));
     }
 

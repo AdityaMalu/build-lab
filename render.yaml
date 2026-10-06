@@ -1,7 +1,7 @@
 # Render blueprint: https://render.com/docs/blueprint-spec
 services:
   - type: web
-    name: build-lab
+    name: machine-coding-lab
     runtime: docker
     plan: free
     autoDeploy: true
