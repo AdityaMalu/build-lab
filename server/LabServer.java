@@ -1537,6 +1537,18 @@ public class LabServer {
     static final double[] BUCKETS = {0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120, 240};
     static final Map<String, java.util.concurrent.atomic.LongAdder> RUN_COUNTS = new java.util.concurrent.ConcurrentHashMap<>();
     static final Map<String, Histogram> RUN_SECONDS = new java.util.concurrent.ConcurrentHashMap<>();
+    static final String[] OUTCOMES = {"pass", "fail", "compile_error", "timeout", "rate_limited", "busy", "rejected", "server_error"};
+    static final String[] PHASES = {"queue", "compile", "exec", "total"};
+
+    static {
+        // Export every series at 0 from the start: Prometheus' increase()/rate() can't count the first event
+        // of a series it has never seen, and the free instance restarts often.
+        for (String lang : LANGS) {
+            for (String o : OUTCOMES) RUN_COUNTS.put(lang + "|" + o, new java.util.concurrent.atomic.LongAdder());
+            for (String p : PHASES) RUN_SECONDS.put(lang + "|" + p, new Histogram());
+        }
+    }
+
     static final Pattern SUITE_COUNTS = Pattern.compile("\"passed\":(\\d+),\"failed\":\\d+,\"total\":(\\d+),\"millis\":-?\\d+\\}$");
 
     /** Cumulative Prometheus-style histogram (bucket i counts observations <= BUCKETS[i]). */
