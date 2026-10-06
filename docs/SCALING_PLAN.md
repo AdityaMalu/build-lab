@@ -130,6 +130,15 @@ ran without the filter on arm64.*
 
 ## Phase 3: Warm pools and compile caching, target p95 < 5 s for Go/C++ (≈3–5 days)
 
+**Step 1, compile caching, built.** It helps every deployment, Render included. Measured locally, warm:
+
+| | Before | After | How |
+|---|---|---|---|
+| C++ | 15.7 s | ~3 s (6 s with `<regex>`) | `-O0`; kit objects and a precompiled header built once (`/opt/cppkit`) |
+| Go | 13 s (39 s cold) | ~1.7 s | `LabServer warmup` fills `/opt/gocache` at image build; `-trimpath` so the cache survives per-run folders; `-vet=off` |
+
+Warm workers and the result cache (steps 2 and 6 below) are still to do.
+
 Ordered by expected gain; measure each step on the Phase 1 dashboard.
 
 1. **More CPU:** 2 dedicated A1 cores vs Render's small shared slice. This alone should be the biggest drop.

@@ -25,19 +25,21 @@ COPY server ./server
 COPY web ./web
 # app files stay owned by root and read-only for everyone else
 
-# pre-build the Go standard library into the runner's cache so the first test run is fast
-RUN setpriv --reuid=runner --regid=runner --clear-groups \
-    env HOME=/tmp GOCACHE=/opt/gocache CGO_ENABLED=0 GOTOOLCHAIN=local GOTELEMETRY=off go build std
-
 ENV LAB_MODE=hosted \
     PORT=8080 \
     LAB_PARALLEL_RUNS=1 \
     LAB_TEST_HEAP=200m \
-    LAB_GOCACHE=/opt/gocache
+    LAB_GOCACHE=/opt/gocache \
+    LAB_CPP_KIT=/opt/cppkit
 EXPOSE 8080
 
 # compiled once here instead of on every start (each queued run starts a JVM in its own container)
 RUN javac -d /app/classes server/LabServer.java
+
+# fill the compile caches so even the first run after a restart is fast: the C++ kit objects and
+# precompiled header (/opt/cppkit), and the Go build cache (/opt/gocache, written as the runner user)
+# with everything each project's test binary needs
+RUN java -cp /app/classes LabServer warmup
 
 # no arguments: the website (Render, or the api role with LAB_ROLE=api)
 # "run-job /job": one queued run, inside a fresh gVisor container started by a worker

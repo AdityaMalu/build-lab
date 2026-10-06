@@ -130,6 +130,10 @@ public class LabServer {
             cli(args[1], args.length >= 3 ? args[2] : "workspace", args.length >= 4 ? args[3] : "java");
             return;
         }
+        if (args.length >= 1 && args[0].equals("warmup")) { // Docker build: fill the compile caches once
+            warmup();
+            return;
+        }
         if (runJob) { // inside a per-run gVisor container started by a worker
             runJobInContainer(Paths.get(args[1]));
             return;
@@ -803,8 +807,10 @@ public class LabServer {
         env.put("GOWORK", "off");
         env.put("GOTELEMETRY", "off");
         env.put("CGO_ENABLED", "0");
-        Proc compile = exec(sandboxed(List.of(tool("go").toString(), "test", "-c", "-o", bin.toString(), "./" + pkgDir),
-                false, sandbox), 240, mod, env);
+        // -trimpath: build cache entries don't depend on this run's temp folder, so they are reused across runs;
+        // -vet=off: go test's vet pass roughly doubles the build time of a small package
+        Proc compile = exec(sandboxed(List.of(tool("go").toString(), "test", "-c", "-trimpath", "-vet=off",
+                "-o", bin.toString(), "./" + pkgDir), false, sandbox), 240, mod, env);
         if (compile.code != 0 || !Files.exists(bin)) {
             return compileFailure(clean(compile.output.replace(mod.toString() + File.separator, ""), src, tests), t0);
         }
@@ -837,13 +843,110 @@ public class LabServer {
         return shared;
     }
 
+    /**
+     * C++ compile flags. -O0: tests check behaviour, not speed, and it compiles about twice as fast as -O1.
+     * Must be identical for the precompiled header and every use of it, or g++ silently ignores the header.
+     */
+    static final List<String> CPP_FLAGS = List.of("-std=c++20", "-O0", "-pthread");
+
+    /** Standard headers worth precompiling: what the kit and the projects include. */
+    static final String CPP_PCH = String.join("\n", "#pragma once", "#include \"labtest.hpp\"",
+            "#include <algorithm>", "#include <chrono>", "#include <condition_variable>", "#include <cstdint>",
+            "#include <deque>", "#include <map>", "#include <memory>", "#include <random>", "#include <regex>",
+            "#include <set>", "#include <shared_mutex>", "#include <unordered_map>", "#include <unordered_set>", "");
+
+    static volatile Path[] cppKitCache;
+
+    /**
+     * Built once and reused by every C++ run: the kit's two .cpp files as objects, plus a precompiled header
+     * (labpch.hpp + .gch) that each run force-includes. About 5x faster than compiling everything per run.
+     * Lives in LAB_CPP_KIT (the Docker image builds it in at /opt/cppkit) or build/cppkit. Returns null if it
+     * can't be built, and runs then compile the kit sources directly as before.
+     */
+    static Path[] cppKit() {
+        Path[] cached = cppKitCache;
+        if (cached != null) return cached.length == 0 ? null : cached;
+        synchronized (LabServer.class) {
+            if (cppKitCache != null) return cppKitCache.length == 0 ? null : cppKitCache;
+            Path[] built = null;
+            try {
+                String env = System.getenv("LAB_CPP_KIT");
+                Path dir = env != null && !env.isBlank() ? Paths.get(env) : build.resolve("cppkit");
+                Path kit = root.resolve("testkit/cpp");
+                Path main = dir.resolve("labtest_main.o"), sb = dir.resolve("labsandbox.o"), pch = dir.resolve("labpch.hpp");
+                Path stamp = dir.resolve("flags.txt");
+                String key = String.join(" ", CPP_FLAGS) + "|" + Files.getLastModifiedTime(kit.resolve("labtest.hpp"))
+                        + "|" + Files.getLastModifiedTime(kit.resolve("labtest_main.cpp"))
+                        + "|" + Files.getLastModifiedTime(kit.resolve("labsandbox.cpp"));
+                boolean fresh = Files.exists(main) && Files.exists(sb) && Files.exists(dir.resolve("labpch.hpp.gch"))
+                        && Files.exists(stamp) && Files.readString(stamp).equals(key);
+                if (!fresh && tool("g++") != null) {
+                    Files.createDirectories(dir);
+                    Files.writeString(pch, CPP_PCH);
+                    Map<String, String> env2 = new LinkedHashMap<>(System.getenv());
+                    if (win) env2.put("PATH", tool("g++").getParent() + File.pathSeparator + System.getenv("PATH"));
+                    List<List<String>> steps = List.of(
+                            List.of("-I" + kit, "-c", kit.resolve("labtest_main.cpp").toString(), "-o", main.toString()),
+                            List.of("-c", kit.resolve("labsandbox.cpp").toString(), "-o", sb.toString()),
+                            List.of("-I" + kit, "-x", "c++-header", pch.toString(), "-o", dir.resolve("labpch.hpp.gch").toString()));
+                    boolean ok = true;
+                    for (List<String> step : steps) {
+                        List<String> c = new ArrayList<>(List.of(tool("g++").toString()));
+                        c.addAll(CPP_FLAGS);
+                        c.addAll(step);
+                        Proc p = exec(c, 300, dir, env2);
+                        if (p.code() != 0) {
+                            System.err.println("C++ kit prebuild failed, compiling per run instead:\n" + p.output());
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if (ok) Files.writeString(stamp, key);
+                    fresh = ok;
+                }
+                if (fresh) built = new Path[] {main, sb, pch};
+            } catch (Exception e) {
+                System.err.println("C++ kit prebuild failed, compiling per run instead: " + e);
+            }
+            cppKitCache = built == null ? new Path[0] : built;
+            return built;
+        }
+    }
+
+    /**
+     * Fills the compile caches so the first run after a (re)start is as fast as the rest: the C++ kit, and the
+     * Go build cache with everything a project's test binary needs (testing, the sandbox package, ...),
+     * by building every Go project's tests against its solution. Used by the Dockerfile.
+     */
+    static void warmup() throws Exception {
+        long t0 = System.currentTimeMillis();
+        if (tool("g++") != null) System.out.println("C++ kit: " + (cppKit() != null ? "ready" : "unavailable"));
+        if (tool("go") != null) {
+            for (String id : projectIds()) {
+                if (!Files.isDirectory(langRoot(id, "go").resolve("starter/src"))) continue;
+                Suite s = runSuite(id, "go", langRoot(id, "go").resolve("solution/src"), build.resolve("warmup").resolve(id), hosted, null);
+                System.out.println("Go " + id + ": " + (s.ok() ? "cached" : "FAILED\n" + s.json()));
+            }
+        }
+        System.out.println("Warm-up took " + (System.currentTimeMillis() - t0) / 1000 + " s");
+    }
+
+    static List<String> projectIds() throws IOException {
+        try (Stream<Path> s = Files.list(projects)) {
+            return s.filter(Files::isDirectory).map(p -> p.getFileName().toString()).sorted().toList();
+        }
+    }
+
     /** C++: one binary from the code, the tests and our header-only kit. */
     static Suite runCpp(String id, Path src, Path out, boolean sandbox, List<String[]> only) throws Exception {
         Path tests = langRoot(id, "cpp").resolve("tests/src");
         Path kit = root.resolve("testkit/cpp");
         long t0 = System.currentTimeMillis();
-        List<String> cmd = new ArrayList<>(List.of(tool("g++").toString(), "-std=c++20", "-O1", "-pthread",
-                "-fdiagnostics-color=never", "-I" + src, "-I" + kit));
+        List<String> cmd = new ArrayList<>(List.of(tool("g++").toString()));
+        cmd.addAll(CPP_FLAGS);
+        cmd.addAll(List.of("-fdiagnostics-color=never", "-I" + src, "-I" + kit));
+        Path[] prebuilt = cppKit(); // {labtest_main.o, labsandbox.o, labpch.hpp} or null
+        if (prebuilt != null) cmd.addAll(List.of("-include", prebuilt[2].toString()));
         if (win) cmd.add("-static");
         int sources = 0;
         for (Path p : listFilesAbs(src, "cpp")) {
@@ -853,8 +956,13 @@ public class LabServer {
             }
         }
         for (Path p : listFilesAbs(tests, "cpp")) if (p.toString().endsWith(".cpp")) cmd.add(p.toString());
-        cmd.add(kit.resolve("labtest_main.cpp").toString());
-        cmd.add(kit.resolve("labsandbox.cpp").toString());
+        if (prebuilt != null) {
+            cmd.add(prebuilt[0].toString());
+            cmd.add(prebuilt[1].toString());
+        } else {
+            cmd.add(kit.resolve("labtest_main.cpp").toString());
+            cmd.add(kit.resolve("labsandbox.cpp").toString());
+        }
         Path bin = out.resolve(win ? "t.exe" : "t");
         cmd.add("-o");
         cmd.add(bin.toString());
@@ -1908,8 +2016,9 @@ public class LabServer {
     }
 
     static String clean(String output, Path src, Path tests) {
-        return output.replace(src.toString() + File.separator, "")
-                .replace(tests.toString() + File.separator, "[tests] ");
+        // compilers join include folders with "/" even on Windows, so strip both spellings
+        return output.replace(src.toString() + File.separator, "").replace(src + "/", "")
+                .replace(tests.toString() + File.separator, "[tests] ").replace(tests + "/", "[tests] ");
     }
 
     static void ensureWorkspace(String id, String lang) throws IOException {
