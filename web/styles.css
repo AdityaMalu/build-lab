@@ -275,3 +275,17 @@ input[type="search"]:focus, select:focus, .btn:focus-visible { outline: 2px soli
 .status-badge.muted { color: var(--muted); font-weight: 500; }
 .card-top { padding-right: 120px; }
 @media (max-width: 520px) { .lang-picker select { max-width: 130px; } }
+
+/* completion dropdown (CodeMirror show-hint) and go-to-definition */
+.CodeMirror-hints {
+  z-index: 50; font-family: var(--mono); font-size: 13px; padding: 4px; max-height: 18em;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow);
+}
+li.CodeMirror-hint {
+  display: flex; justify-content: space-between; gap: 18px; padding: 2px 8px; border-radius: 5px;
+  color: var(--text); white-space: pre;
+}
+li.CodeMirror-hint-active { background: var(--accent-soft); color: var(--text); }
+.hint-kind { color: var(--muted); font-size: 11px; font-family: var(--sans); }
+.cm-goto-link { text-decoration: underline; color: var(--link) !important; cursor: pointer; }
+.cm-goto-flash { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }

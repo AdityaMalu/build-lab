@@ -358,6 +358,7 @@
     });
 
     d.tests = await api(`/api/tests/${id}?${langQ()}`);
+    loadTestSources(d); // for completion and go-to-definition; not awaited
     d.results = lsGet(resultsKey(id), {}) || {};
     d.selected = new Set();
     d.running = null;
@@ -424,7 +425,8 @@
         <span class="chips">${p.tags.map((t) => `<span class="chip">${esc(t)}</span>`).join("")}</span></div>
         <article class="markdown">${renderMarkdown(d.info.readme)}</article>`;
     } else if (tab === "tests") {
-      body.innerHTML = '<p class="muted">The suite your code must pass. Reading tests is part of the job.</p>';
+      body.innerHTML = '<p class="muted">The suite your code must pass. Reading tests is part of the job. '
+        + 'Ctrl+click (Cmd+click on a Mac) a name to jump to its declaration.</p>';
       for (const f of d.info.tests) await appendCode(body, d.project.id, "tests", f);
     } else if (tab === "solution") {
       if (!d.solutionRevealed) {
@@ -604,7 +606,13 @@
         indentWithTabs: state.lang === "go", // gofmt style
         matchBrackets: true,
         autoCloseBrackets: true,
+        hintOptions: { hint: (cm, opts) => hintAt(d, cm, opts), completeSingle: false, closeCharacters: /[\s()\[\]{};:>,=]/ },
         extraKeys: {
+          "Ctrl-Space": (cm) => cm.showHint({ explicit: true }),
+          "Cmd-Space": (cm) => cm.showHint({ explicit: true }),
+          F12: (cm) => goToDefinition(d, cm.getCursor()),
+          "Ctrl-B": (cm) => goToDefinition(d, cm.getCursor()),
+          "Cmd-B": (cm) => goToDefinition(d, cm.getCursor()),
           Tab: (cm) => cm.somethingSelected() ? cm.indentSelection("add") : cm.replaceSelection("    "),
           "Ctrl-S": () => saveAll(d).then(() => toast("Saved")),
           "Cmd-S": () => saveAll(d).then(() => toast("Saved")),
@@ -615,6 +623,7 @@
         },
       });
       d.cm.on("change", () => markDirty(d));
+      setupCodeIntel(d);
     } else {
       ta.classList.add("fallback");
       ta.spellcheck = false;
@@ -624,6 +633,163 @@
         if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); e.shiftKey ? runFailed(d) : runTests(d); }
       });
     }
+  }
+
+  // ------------------------------------------------------------ completion and go-to-definition
+  // Your files and the tests are indexed in the browser (web/codeintel.js). The solution never is.
+  const TESTS = "[tests] "; // marks test files in the index
+
+  async function loadTestSources(d) {
+    d.testSources = {};
+    for (const f of d.info.tests) {
+      try {
+        d.testSources[f] = await api(`/api/file?project=${d.project.id}&${langQ()}&area=tests&path=${encodeURIComponent(f)}`);
+      } catch { /* completion simply knows less */ }
+    }
+  }
+
+  function intelFiles(d) {
+    if (d.current && d.cm) d.buffers[d.current] = editorValue(d);
+    const files = {};
+    for (const f of d.info.workspace) files[f] = d.buffers[f] ?? "";
+    for (const [f, text] of Object.entries(d.testSources || {})) files[TESTS + f] = text;
+    return files;
+  }
+
+  /** CodeMirror hint source: words that start with what's left of the cursor. */
+  function hintAt(d, cm, opts) {
+    if (!window.CodeIntel) return null;
+    const cur = cm.getCursor();
+    const line = cm.getLine(cur.line);
+    let start = cur.ch;
+    while (start > 0 && /[\w$]/.test(line[start - 1])) start--;
+    const prefix = line.slice(start, cur.ch);
+    const afterDot = start > 0 && (line[start - 1] === "." || line.slice(start - 2, start) === "->" || line.slice(start - 2, start) === "::");
+    if (!opts.explicit && !afterDot && prefix.length < 2) return null;
+    const token = cm.getTokenAt(cur);
+    if (!opts.explicit && /comment|string/.test(token.type || "")) return null;
+    const files = intelFiles(d);
+    const list = CodeIntel.completions(CodeIntel.index(files, state.lang), files, state.lang, prefix, afterDot);
+    if (!list.length) return null;
+    return {
+      list: list.map((c) => ({
+        text: c.text,
+        render: (el) => { el.innerHTML = `<span>${esc(c.text)}</span><span class="hint-kind">${esc(c.kind)}</span>`; },
+      })),
+      from: window.CodeMirror.Pos(cur.line, start),
+      to: window.CodeMirror.Pos(cur.line, cur.ch),
+    };
+  }
+
+  /** Jumps to where the name at `pos` is declared; repeating it on the same name cycles through matches. */
+  function goToDefinition(d, pos, fromFile = d.current) {
+    if (!window.CodeIntel) return;
+    let name = pos.word;
+    if (!name) {
+      const range = d.cm.findWordAt(pos);
+      name = d.cm.getRange(range.anchor, range.head);
+    }
+    if (!/^[A-Za-z_$][\w$]*$/.test(name)) return;
+    const files = intelFiles(d);
+    const hits = CodeIntel.definitions(CodeIntel.index(files, state.lang), name,
+      { file: fromFile, line: pos.line, secondary: TESTS });
+    if (!hits.length) {
+      toast(`No declaration of "${name}" in your code or the tests`);
+      return;
+    }
+    const key = `${name}@${fromFile}:${pos.line}`;
+    d.gotoCycle = d.gotoCycle && d.gotoCycle.key === key ? { key, i: (d.gotoCycle.i + 1) % hits.length } : { key, i: 0 };
+    let hit = hits[d.gotoCycle.i];
+    // already standing on this declaration: go to the next one instead
+    if (hits.length > 1 && hit.file === fromFile && hit.line === pos.line) {
+      d.gotoCycle.i = (d.gotoCycle.i + 1) % hits.length;
+      hit = hits[d.gotoCycle.i];
+    }
+    if (hits.length > 1) toast(`${name}: ${d.gotoCycle.i + 1} of ${hits.length} declarations (F12 again for the next)`);
+    revealSymbol(d, hit);
+  }
+
+  async function revealSymbol(d, hit) {
+    if (hit.file.startsWith(TESTS)) {
+      await showLeft(d, "tests");
+      const view = [...document.querySelectorAll("#leftBody .code-view")].find((v) => v.dataset.file === hit.file.slice(TESTS.length));
+      const el = view && view.querySelector(`.code-line[data-line="${hit.line + 1}"]`);
+      if (!el) return;
+      el.scrollIntoView({ block: "center" });
+      el.classList.add("flash");
+      setTimeout(() => el.classList.remove("flash"), 1600);
+      return;
+    }
+    if (hit.file !== d.current) await openFile(d, hit.file);
+    const cm = d.cm;
+    cm.setCursor({ line: hit.line, ch: hit.ch });
+    cm.scrollIntoView({ line: hit.line, ch: hit.ch }, cm.getScrollInfo().clientHeight / 3);
+    cm.focus();
+    const handle = cm.addLineClass(hit.line, "background", "cm-goto-flash");
+    setTimeout(() => cm.removeLineClass(handle, "background", "cm-goto-flash"), 1600);
+  }
+
+  function setupCodeIntel(d) {
+    const cm = d.cm;
+    // suggestions while typing: after 2 letters of a word, or right after "." / "->" / "::"
+    cm.on("inputRead", (editor, change) => {
+      if (editor.state.completionActive || change.origin !== "+input") return;
+      if (/^[\w$.>:]$/.test(change.text[change.text.length - 1].slice(-1))) editor.showHint();
+    });
+    // Ctrl+click (Cmd+click on a Mac) goes to the declaration; holding the key underlines the name
+    const wrapper = cm.getWrapperElement();
+    let mark = null;
+    const clearMark = () => { if (mark) { mark.clear(); mark = null; } };
+    cm.on("mousedown", (editor, e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+      e.preventDefault(); // otherwise CodeMirror adds a second cursor
+      clearMark();
+      goToDefinition(d, editor.coordsChar({ left: e.clientX, top: e.clientY }));
+    });
+    wrapper.addEventListener("mousemove", (e) => {
+      clearMark();
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const pos = cm.coordsChar({ left: e.clientX, top: e.clientY });
+      const range = cm.findWordAt(pos);
+      if (/^[A-Za-z_$][\w$]*$/.test(cm.getRange(range.anchor, range.head))) {
+        mark = cm.markText(range.anchor, range.head, { className: "cm-goto-link" });
+      }
+    });
+    wrapper.addEventListener("mouseleave", clearMark);
+    wrapper.addEventListener("keyup", (e) => { if (e.key === "Control" || e.key === "Meta") clearMark(); });
+
+    // in the Tests panel too: Ctrl+click a name to jump to it in your code
+    document.getElementById("leftBody").addEventListener("click", (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const lineEl = e.target.closest(".code-line");
+      const view = e.target.closest(".code-view");
+      if (!lineEl || !view || !view.closest("#leftBody") || document.querySelector("#leftTabs .active")?.dataset.tab !== "tests") return;
+      const word = wordAtPoint(e.clientX, e.clientY);
+      if (!word) return;
+      e.preventDefault();
+      goToDefinition(d, { line: Number(lineEl.dataset.line) - 1, word }, TESTS + view.dataset.file);
+    });
+  }
+
+  /** The identifier under the mouse in plain (non-editor) text. */
+  function wordAtPoint(x, y) {
+    let node, offset;
+    if (document.caretPositionFromPoint) {
+      const p = document.caretPositionFromPoint(x, y);
+      if (!p) return null;
+      node = p.offsetNode; offset = p.offset;
+    } else if (document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(x, y);
+      if (!r) return null;
+      node = r.startContainer; offset = r.startOffset;
+    }
+    if (!node || node.nodeType !== Node.TEXT_NODE) return null;
+    const text = node.textContent;
+    let a = offset, b = offset;
+    while (a > 0 && /[\w$]/.test(text[a - 1])) a--;
+    while (b < text.length && /[\w$]/.test(text[b])) b++;
+    const word = text.slice(a, b);
+    return /^[A-Za-z_$][\w$]*$/.test(word) ? word : null;
   }
 
   function editorValue(d) {

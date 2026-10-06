@@ -211,6 +211,9 @@ Each run has a wall-clock timeout (90 s sandboxed, 180 s locally); a process tha
 - **Staleness detection:** each stored result keeps a hash of the code it ran against; edited files mark
   results "stale" so "run failed" means "failed *on the current code*".
 - Unsaved-change guard on navigation and language switch.
+- **Code intelligence without a language server** (`web/codeintel.js`): per-language patterns index the declarations
+  in your files and the tests (never the solution). That drives autocomplete (typing, Ctrl+Space) and
+  go-to-definition (Ctrl/Cmd+click or F12, also from the Tests panel; F12 again cycles through matches).
 
 ### 4.8 Validation rules (defence in depth at the edge)
 - Project ids `[a-z0-9-]{1,64}`, language from a fixed allowlist.

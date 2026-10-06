@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 18 hands-on projects (10 build, 8 debug) with specs, starter code, test suites and reference solutions,
-plus a web UI to read the spec, edit code, and run individual or all tests. **Pick your language** in the top bar;
+plus a web UI to read the spec, edit code (with autocomplete and Ctrl+click go-to-definition), and run individual or all tests. **Pick your language** in the top bar;
 your code, results and progress are kept separately for each language. No build tools or libraries needed.
 
 | Language | Projects | Style |
