@@ -1631,7 +1631,9 @@ public class LabServer {
 
     /** GET /metrics in the Prometheus text format. Protected by LAB_METRICS_TOKEN when that is set. */
     static void metrics(HttpExchange ex) throws IOException {
-        if (!ex.getRequestURI().getPath().equals("/metrics") || !ex.getRequestMethod().equals("GET")) {
+        String path = ex.getRequestURI().getPath();
+        String method = ex.getRequestMethod();
+        if (!(path.equals("/metrics") || path.equals("/metrics/")) || !(method.equals("GET") || method.equals("HEAD"))) {
             send(ex, 404, "text/plain", "not found");
             return;
         }
@@ -1678,6 +1680,12 @@ public class LabServer {
         sb.append("# HELP lab_log_lines_dropped_total Run log lines that could not be shipped to Loki.\n")
                 .append("# TYPE lab_log_lines_dropped_total counter\nlab_log_lines_dropped_total ")
                 .append(LOGS_DROPPED.sum()).append('\n');
+        if (method.equals("HEAD")) { // connection checkers probe with HEAD: headers only
+            ex.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+            ex.sendResponseHeaders(200, -1);
+            ex.close();
+            return;
+        }
         send(ex, 200, "text/plain; version=0.0.4; charset=utf-8", sb.toString());
     }
 
