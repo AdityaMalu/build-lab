@@ -75,7 +75,7 @@ flowchart LR
 | **LabServer** (`server/LabServer.java`) | Static files, REST API, test discovery, compile + run orchestration, output parsing, sandbox wrapping, rate limiting |
 | **Content** (`projects/`) | Per project: spec, and per language `starter/`, `tests/`, `solution/` |
 | **Test kits** (`testkit/<lang>`) | A tiny test framework per language that prints a common line protocol, plus the seccomp sandbox |
-| **CI** (`.github/workflows`) | `verify.yml`: all solutions pass, all starters compile, Docker image smoke test, sandbox escape probes. `keep-awake.yml`: prevents free-tier sleep |
+| **CI** (`.github/workflows`) | `verify.yml`: all solutions pass, all starters compile, Docker image smoke test, sandbox escape probes. `keep-awake.yml`: backup ping (the per-minute Grafana scrape is what keeps Render awake) |
 | **Hosting** | `Dockerfile` + `render.yaml` blueprint, auto-deploy on push to `main` |
 
 ### Two deployment modes
@@ -261,7 +261,7 @@ flowchart LR
     CI --> J1["job: solutions<br/>all languages: solutions pass,<br/>starters compile"]
     CI --> J2["job: docker<br/>build image, hosted smoke test,<br/>sandbox probes"]
     Dev --> R["Render auto-deploy<br/>(Dockerfile)"]
-    K["keep-awake.yml<br/>cron */10"] --> R
+    K["Grafana Cloud scrape<br/>every minute + keep-awake backup"] --> R
 ```
 
 - Image: `eclipse-temurin:21-jdk` + `python3` + `g++` + Go 1.23; Go std library pre-compiled into

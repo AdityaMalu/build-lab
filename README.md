@@ -68,8 +68,11 @@ through (`.github/scripts/sandbox-probes.sh`).
 2. **New → Blueprint →** pick `build-lab`. Render reads `render.yaml` and builds the `Dockerfile`.
 3. Share the `https://build-lab-xxxx.onrender.com` URL. Every push to `main` redeploys.
 
-Free instances sleep after ~15 minutes idle; the `keep-awake` workflow pings the site every 10 minutes
-to prevent that (edit the URL in `.github/workflows/keep-awake.yml` if you deploy your own copy).
+Free instances sleep after ~15 minutes idle. What keeps this one awake is the **Grafana Cloud scrape of
+`/metrics` every minute** ([docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)), which counts as traffic. The
+`keep-awake` workflow is only a backup: GitHub throttles frequent schedules on free repos, so its
+"every 10 minutes" cron actually runs every few hours. An always-on free instance uses about 744 of
+Render's 750 free hours a month, so keep only one free service awake per workspace.
 
 ## Layout
 ```

@@ -1,7 +1,9 @@
 name: keep-awake
 
-# Pings the hosted site so Render's free instance doesn't go to sleep after 15 idle minutes.
-# (Free for public repos. GitHub may delay scheduled runs by a few minutes, which is fine here.)
+# Backup ping for the hosted site. The real keep-alive is Grafana Cloud scraping /metrics every minute
+# (docs/OBSERVABILITY.md): GitHub throttles frequent schedules on free repos, so this cron actually
+# fires every few hours, which only helps if the Grafana scrape is ever turned off.
+# (Free for public repos.)
 on:
   schedule:
     - cron: "*/10 * * * *"

@@ -64,7 +64,7 @@ After editing, run `sudo systemctl restart buildlab-worker` and
 ## Notes
 - **Keep Render as a fallback.** Render runs the same image in single-process mode (`LAB_ROLE` unset).
   Point the keep-awake workflow (`.github/workflows/keep-awake.yml`) at whichever URL you share.
-- **Oracle may reclaim idle Always Free VMs.** The keep-awake ping (every 10 minutes) also counts as activity.
+- **Oracle may reclaim idle Always Free VMs.** Steady traffic helps: point the Grafana scrape (docs/OBSERVABILITY.md) at this VM too.
 - **Scaling.** On one VM, "autoscaling" means the worker's slot count. With more machines, run more
   workers against the same Redis: they share the consumer group, so nothing else changes.
 - **Tested on every push.** CI (`fleet` job in `.github/workflows/verify.yml`) builds this setup on an
