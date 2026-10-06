@@ -13,6 +13,9 @@ services:
         value: "1"
       - key: LAB_TEST_HEAP
         value: 200m
+      # Google Search Console ownership tag for machine-coding-lab.onrender.com (public, shown in page source)
+      - key: LAB_GOOGLE_VERIFICATION
+        value: 30_YeBnWjtfkBga1KTTcvpCtXPRIVd7Im8H3ZSGvRLM
       # Observability (docs/OBSERVABILITY.md). Secrets: set in the Render dashboard, never in this file.
       - key: LAB_METRICS_TOKEN
         sync: false

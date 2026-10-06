@@ -403,11 +403,19 @@ public class LabServer {
                 + "<meta property=\"og:description\" content=\"" + html(description) + "\">\n"
                 + "<meta property=\"og:url\" content=\"" + html(url) + "\">\n"
                 + "<meta name=\"twitter:card\" content=\"summary\">\n"
+                + googleVerification()
                 + "<script type=\"application/ld+json\">" + jsonLd.replace("</", "<\\/") + "</script>";
         String page = Files.readString(root.resolve("web/index.html"))
                 .replaceFirst("<title>[^<]*</title>", Matcher.quoteReplacement(head))
                 .replace("<!--PRERENDER-->", "<div class=\"prerender list-inner\">\n" + body + "</div>");
         send(ex, status, "text/html; charset=utf-8", page);
+    }
+
+    /** Google Search Console ownership tag (public by design), from LAB_GOOGLE_VERIFICATION. */
+    static String googleVerification() {
+        String code = System.getenv("LAB_GOOGLE_VERIFICATION");
+        return code != null && code.matches("[A-Za-z0-9_-]{10,100}")
+                ? "<meta name=\"google-site-verification\" content=\"" + code + "\">\n" : "";
     }
 
     static List<String> langNames(String id) {
