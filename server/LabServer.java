@@ -148,6 +148,26 @@ public class LabServer {
                 : Integer.parseInt(System.getenv().getOrDefault("PORT", "8090"));
         String bind = hosted ? "0.0.0.0" : "127.0.0.1";
         HttpServer server = HttpServer.create(new InetSocketAddress(bind, port), 0);
+        String redirect = System.getenv("LAB_REDIRECT_TO");
+        if (redirect != null && redirect.matches("https://[A-Za-z0-9.-]+")) {
+            // an old address of the site: send everyone (and search engines' ranking) to the new one, path kept
+            server.createContext("/", ex -> {
+                String path = ex.getRequestURI().getRawPath();
+                if (path.equals("/api/config")) { // keep Render's health check green
+                    send(ex, 200, "application/json", "{\"mode\":\"redirect\"}");
+                    return;
+                }
+                String q = ex.getRequestURI().getRawQuery();
+                ex.getResponseHeaders().set("Location", redirect + path + (q == null ? "" : "?" + q));
+                ex.getResponseHeaders().set("Cache-Control", "public, max-age=86400");
+                ex.sendResponseHeaders(301, -1);
+                ex.close();
+            });
+            server.setExecutor(Executors.newFixedThreadPool(4));
+            server.start();
+            System.out.println("Redirecting every request to " + redirect);
+            return;
+        }
         server.createContext("/api/", LabServer::api);
         server.createContext("/metrics", LabServer::metrics);
         server.createContext("/", LabServer::staticFile);
