@@ -159,9 +159,13 @@
   function indexCpp(file, lines, out) {
     const typeRe = /\b(class|struct|enum\s+class|enum|union|namespace)\s+([A-Za-z_]\w*)\s*(?:final\s*)?[:{;]?/;
     const usingRe = /^\s*using\s+([A-Za-z_]\w*)\s*=/;
-    const funcRe = /^\s*(?:template\s*<[^>]*>\s*)?(?:(?:static|inline|virtual|explicit|constexpr|friend|extern|const|unsigned|signed)\s+)*(?:[\w:]+(?:<[^;()]*>)?[\s*&]+)+(?:[\w]+::)*(~?[A-Za-z_]\w*)\s*\(/;
+    // "type part, then a name": each character of the type part can match only one alternative (a word
+    // character, a <template argument> or a separator), which keeps matching linear instead of exponential.
+    // Group 1 is the type part (modifiers included) and must contain a word; group 2 is the name.
+    const funcRe = /^\s*(?:template\s*<[^>]*>\s*)?((?:[\w:]|<(?:[^;()<>]|<[^;()<>]*>)*>|[\s*&])*?)[\s*&](?:\w+::)*(~?[A-Za-z_]\w*)\s*\(/;
     const ctorRe = /^\s*(?:explicit\s+)?([A-Z]\w*)\s*\([^;]*\)\s*(?::|\{|$)/;
-    const varRe = /^\s*(?:(?:static|const|constexpr|mutable|inline|thread_local)\s+)*(?:[\w:]+(?:<[^;()]*>)?[\s*&]+)+([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*(?:\{[^;]*\}|=[^=][^;]*|\([^;]*\))?\s*;/;
+    const varRe = /^\s*((?:[\w:]|<(?:[^;()<>]|<[^;()<>]*>)*>|[\s*&])*?)[\s*&]([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*(?:\{[^;]*\}|=[^=][^;]*|\([^;]*\))?\s*;/;
+    const typed = (m) => m && /\w/.test(m[1]); // "  foo(x);" is a call, not a declaration
     const forRe = /\bfor\s*\(\s*(?:const\s+)?[\w:<>,*& ]+?[\s*&]+([A-Za-z_]\w*)\s*(?::|=)/;
     lines.forEach((t, i) => {
       if (isComment(t, "cpp") || /^\s*#/.test(t)) return;
@@ -172,7 +176,7 @@
       const bad = /^\s*(return|else|new|delete|throw|case|goto|co_return|using)\b/.test(t);
       let declared = null;
       if (!bad && (m = ctorRe.exec(t))) declared = m[1];
-      else if (!bad && (m = funcRe.exec(t)) && !/\b(if|for|while|switch|catch|sizeof)\s*\(/.test(t.slice(0, t.indexOf(m[1])))) declared = m[1];
+      else if (!bad && typed(m = funcRe.exec(t)) && !/\b(if|for|while|switch|catch|sizeof)\s*\(/.test(t.slice(0, t.indexOf(m[2])))) declared = m[2];
       if (declared) {
         add(out, declared, "function", file, i, col(t, declared));
         const open = t.indexOf("(", t.indexOf(declared));
@@ -181,8 +185,8 @@
           const pm = /([A-Za-z_]\w*)\s*(?:=[^,]*)?$/.exec(p.trim());
           if (pm && /[\s*&]/.test(p.trim().replace(/\s*=.*$/, ""))) add(out, pm[1], "param", file, i, col(t, pm[1], open));
         });
-      } else if (!bad && (m = varRe.exec(t))) {
-        add(out, m[1], /^\s{0,4}\S/.test(t) || /_$/.test(m[1]) ? "field" : "var", file, i, col(t, m[1]));
+      } else if (!bad && typed(m = varRe.exec(t))) {
+        add(out, m[2], /^\s{0,4}\S/.test(t) || /_$/.test(m[2]) ? "field" : "var", file, i, col(t, m[2]));
       }
       if ((m = forRe.exec(t))) add(out, m[1], "var", file, i, col(t, m[1]));
     });

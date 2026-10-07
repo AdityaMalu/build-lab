@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# Least privilege: these jobs only read the repository.
+permissions:
+  contents: read
+
 jobs:
   solutions:
     runs-on: ubuntu-latest

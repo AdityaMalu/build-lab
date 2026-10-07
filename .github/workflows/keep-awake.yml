@@ -9,6 +9,8 @@ on:
     - cron: "*/10 * * * *"
   workflow_dispatch:
 
+permissions: {} # needs no repository access at all
+
 jobs:
   ping:
     runs-on: ubuntu-latest

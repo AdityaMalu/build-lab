@@ -38,7 +38,7 @@ func intSetting(cfg map[string]string, key string, def, lo, hi int64) (int64, er
 	if !ok {
 		return def, nil
 	}
-	v, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	v, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 32) // every setting fits 32 bits
 	if err != nil || v < lo || v > hi {
 		return 0, fmt.Errorf("%s must be a number in %d..%d: %w", key, lo, hi, ErrInvalidConfig)
 	}

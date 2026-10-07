@@ -1,12 +1,14 @@
-"""Given. Demo-grade hashing so the exercise has no dependencies.
-In production use a slow, salted KDF (bcrypt / scrypt / Argon2) with a per-user salt."""
+"""Given. Password hashing with the standard library only (PBKDF2-HMAC-SHA256), so the exercise has no dependencies.
+Demo settings: a fixed salt keeps it deterministic for the tests. In production use a random per-user salt
+stored with the hash (or bcrypt / scrypt / Argon2) and far more iterations."""
 
 import hashlib
 import threading
 
 
 def hash_password(password):
-    return "sha256:" + hashlib.sha256(("practice-lab:" + password).encode("utf-8")).hexdigest()
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), b"practice-lab", 20_000)
+    return "pbkdf2-sha256:" + digest.hex()
 
 
 class InMemoryUserStore:

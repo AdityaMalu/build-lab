@@ -477,8 +477,9 @@ public class LabServer {
 
     static String lang(String raw) {
         if (raw == null || raw.isBlank()) return "java";
-        if (!LANGS.contains(raw)) throw new IllegalArgumentException("unknown language " + raw);
-        return raw;
+        int i = LANGS.indexOf(raw);
+        if (i < 0) throw new IllegalArgumentException("unknown language " + raw);
+        return LANGS.get(i); // our own constant, never the caller's string
     }
 
     static Path langRoot(String id, String lang) {
@@ -862,14 +863,15 @@ public class LabServer {
     /** Parses ?tests=Suite#method,... into validated [suite, method] pairs; null = run everything. */
     static List<String[]> selection(String id, String lang, String raw) throws IOException {
         if (raw == null || raw.isBlank()) return null;
-        java.util.Set<String> known = new java.util.HashSet<>();
-        for (TestInfo t : discoverTests(id, lang)) known.add(t.suite() + "#" + t.method());
+        Map<String, TestInfo> known = new java.util.HashMap<>();
+        for (TestInfo t : discoverTests(id, lang)) known.put(t.suite() + "#" + t.method(), t);
         List<String[]> out = new ArrayList<>();
         for (String item : raw.split(",")) {
             String t = item.trim();
             if (t.isEmpty()) continue;
-            if (!known.contains(t)) throw new IllegalArgumentException("unknown test " + t);
-            out.add(t.split("#", 2));
+            TestInfo info = known.get(t);
+            if (info == null) throw new IllegalArgumentException("unknown test " + t);
+            out.add(new String[] {info.suite(), info.method()}); // names as found in the test sources
         }
         if (out.isEmpty()) return null;
         if (out.size() > 500) throw new IllegalArgumentException("too many tests selected");
@@ -1795,13 +1797,14 @@ public class LabServer {
 
     /** docker runner: the job runs in a fresh, network-less gVisor container that is removed afterwards. */
     static String[] runInContainer(Map<String, String> job) throws Exception {
-        String runId = job.get("run");
-        if (runId == null || !runId.matches("[0-9a-f]{1,40}")) throw new IllegalArgumentException("bad run id");
-        Path dir = JOB_ROOT.resolve(runId);
+        // folder and container are named by this worker, not by anything that came through the queue
+        String local = Long.toHexString(java.util.concurrent.ThreadLocalRandom.current().nextLong() & Long.MAX_VALUE)
+                + Long.toHexString(System.nanoTime());
+        Path dir = JOB_ROOT.resolve(local);
         Files.createDirectories(dir);
         try {
             Files.writeString(dir.resolve("request.json"), flatJson(job));
-            String container = "lab-run-" + runId;
+            String container = "lab-run-" + local;
             List<String> cmd = List.of("docker", "run", "--rm", "--name", container,
                     "--runtime=" + DOCKER_RUNTIME, "--network=none",
                     "--memory=1g", "--memory-swap=1g", "--cpus=1", "--pids-limit=512",
@@ -2315,9 +2318,11 @@ public class LabServer {
         }
     }
 
-    static String id(String raw) {
+    /** A project id, returned as the name of the project's own folder (never the caller's string). */
+    static String id(String raw) throws IOException {
         if (raw == null || !raw.matches("[a-z0-9-]{1,64}")) throw new IllegalArgumentException("bad project id");
-        return raw;
+        for (String known : projectIds()) if (known.equals(raw)) return known;
+        throw new HttpError(404, "unknown project " + raw);
     }
 
     static Path progressFile() {
